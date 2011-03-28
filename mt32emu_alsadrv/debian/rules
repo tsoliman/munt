@@ -1,0 +1,25 @@
+#!/usr/bin/make -f
+
+build: build-stamp
+build-stamp:
+	dh build
+	touch build-stamp
+
+clean:
+	dh clean --before auto_clean
+	$(MAKE) clean realclean
+	dh clean --after auto_clean
+
+install: build install-stamp
+install-stamp:
+	dh install --before auto_install
+	dh install --after auto_install
+	touch install-stamp
+
+binary-arch: install
+	dh binary-arch
+
+binary-indep: install
+	dh binary-indep
+
+binary: binary-arch binary-indep

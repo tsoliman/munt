@@ -1,0 +1,23 @@
+#!/usr/bin/make -f
+include /usr/share/quilt/quilt.make
+
+build: $(QUILT_STAMPFN) build-stamp
+build-stamp:
+	dh build
+	touch build-stamp
+
+clean: unpatch
+	dh clean
+
+install: build install-stamp
+install-stamp:
+	dh install
+	touch install-stamp
+
+binary-arch: install
+	dh binary-arch
+
+binary-indep: install
+	dh binary-indep
+
+binary: binary-arch binary-indep

@@ -1,0 +1,23 @@
+Source: mt32emu
+Priority: extra
+Maintainer: Vincent Crevot <vcrevot@retroject.net>
+Build-Depends: debhelper (>= 7), quilt
+Standards-Version: 3.8.0
+Section: contrib/libs
+Homepage: http://sourceforge.net/projects/munt/
+
+Package: mt32emu-dev
+Section: contrib/libdevel
+Architecture: i386
+Depends: libc6dev | libc-dev
+Description: Roland MT-32 emulation library
+ The library in this package provides C++ classes to emulate the Roland MT-32,
+ CM-32L and LAPC-I synthesizers modules. These devices were used by many DOS
+ games from the 80's and 90's to produce digital music and sound effects. 
+ .
+ This package should only be of concern to emulation developers and
+ maintainers. See the mt32emu-mt32d and mt32emu-xmt32 packages for an actual
+ MT-32 emulator.
+ .
+ NOTE: you must own a dump of the original Roland ROM for this package to be of
+ any practical use.

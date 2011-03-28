@@ -1,0 +1,2 @@
+?package(mt32emu-xmt32):needs="X11" section="Applications/Emulators"\
+  title="MT-32 Emulator" command="/usr/bin/xmt32"
