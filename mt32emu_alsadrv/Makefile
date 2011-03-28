@@ -1,3 +1,6 @@
+export CPATH=../include
+export LIBRARY_PATH=../mt32emu/build/
+
 CXXFLAGS=-O2
 LIBS=-lmt32emu -lm -lasound -lpthread
 XLIBS=-L/usr/X11R6/lib -lX11 -lXt -lXpm
