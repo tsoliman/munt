@@ -16,88 +16,90 @@
  */
 
 #include <cstring>
-
 #include "mt32emu.h"
-
 #include "delayReverb.h"
 
 using namespace MT32Emu;
 
-// All in seconds
-const float RAMP_TIME = 1.0f / 88.0f; // Time taken to ramp up from 0 to desired reverb/feedback levels after parameter change
-const float BASE_DELAY = 0.0006875;
-const float LEFT_DELAY_COEF = 0.056;
-const float RIGHT_DELAY_COEF = 0.028;
+
+// The values below are found via analysis of digital samples
+
+const float REVERB_DELAY[8] = {0.012531f, 0.0195f, 0.03f, 0.0465625f, 0.070625f, 0.10859375f, 0.165f, 0.25f};
+const float REVERB_FADE[8] = {0.0f, 0.072265218f, 0.120255297f, 0.192893979f, 0.288687407f, 0.384667566f, 0.504922864f, 0.745338317f};
+const float REVERB_FEEDBACK = -175.0f / 256.0f;
+const float LPF_VALUE = 0.594603558f; // = EXP2F(-0.75f)
 
 DelayReverb::DelayReverb() {
+	bufLeft = NULL;
+	bufRight = NULL;
 	sampleRate = 0;
-	buf = NULL;
-	bufSize = 0;
-	leftDelaySeconds = 0;
-	rightDelaySeconds = 0;
-	targetReverbLevel = 0;
-	targetFeedbackLevel = 0;
-	// Will be set to something reasonable in setSampleRate():
-	rampTarget = 1;
+	resetParameters();
 }
 
 DelayReverb::~DelayReverb() {
-	delete[] buf;
+	delete[] bufLeft;
+	delete[] bufRight;
 }
 
 void DelayReverb::setSampleRate(unsigned int newSampleRate) {
 	if (newSampleRate != sampleRate) {
 		sampleRate = newSampleRate;
-		delete[] buf;
-		// FIXME: Always 2 second buffer - we could reduce this to what we actually need after we've tweaked the parameters
-		bufSize = 2 * newSampleRate;
-		buf = new float[bufSize];
-		rampTarget = (unsigned int)(RAMP_TIME * newSampleRate);
+
+		delete[] bufLeft;
+		delete[] bufRight;
+
+		// If we ever need a speedup, set bufSize to EXP2F(ceil(log2(bufSize))) and use & instead of % to find buf indexes
+		bufSize = Bit32u(2.0f * REVERB_DELAY[7] * sampleRate);
+		bufLeft = new float[bufSize];
+		bufRight = new float[bufSize];
+
 		reset();
 	}
 }
 
 void DelayReverb::setParameters(Bit8u /*mode*/, Bit8u time, Bit8u level) {
-	float oldLeftDelaySeconds = leftDelaySeconds;
-	float oldRightDelaySeconds = rightDelaySeconds;
-	float oldTargetReverbLevel = targetReverbLevel;
-	float oldTargetFeedbackLevel = targetFeedbackLevel;
 
-	leftDelaySeconds = BASE_DELAY + time * LEFT_DELAY_COEF;
-	rightDelaySeconds = BASE_DELAY + time * RIGHT_DELAY_COEF;
-	targetReverbLevel = level * 6.0f / 127.0f;
-	targetFeedbackLevel = 30.0f / 128.0f;
+	// Time in samples between impulse responses
+	delay = Bit32u(REVERB_DELAY[time] * sampleRate);
 
-	if (leftDelaySeconds != oldLeftDelaySeconds || rightDelaySeconds != oldRightDelaySeconds || targetReverbLevel != oldTargetReverbLevel || targetFeedbackLevel != oldTargetFeedbackLevel) {
-		resetParameters();
-	}
+	// Fading speed, i.e. amplitude ratio of neighbor responses
+	fade = REVERB_FADE[level];
+	resetBuffer();
 }
 
 void DelayReverb::process(const float *inLeft, const float *inRight, float *outLeft, float *outRight, unsigned long numSamples) {
+	if ((bufLeft == NULL) || (bufRight == NULL)) {
+		return;
+	}
+
 	for (unsigned int sampleIx = 0; sampleIx < numSamples; sampleIx++) {
-		float leftSample = inLeft[sampleIx];
-		float rightSample = inRight[sampleIx];
 
-		bufIx = (bufSize + bufIx - 1) % bufSize;
-		float reverbLeft = buf[(bufIx + leftDelay) % bufSize];
-		float reverbRight = buf[(bufIx + rightDelay) % bufSize];
+		// Since speed isn't likely an issue here, we use a simple approach for ring buffer indexing
+		Bit32u bufIxP1 = (bufIx + 1) % bufSize;
+		Bit32u bufIxMDelay = (bufSize + bufIx - delay) % bufSize;
+		Bit32u bufIxM2Delay = (bufSize + bufIx - delay - delay) % bufSize;
 
-		outLeft[sampleIx] = reverbLeft * reverbLevel;
-		outRight[sampleIx] = reverbRight * reverbLevel;
+		// Attenuate each next response
+		float left = REVERB_FEEDBACK * bufLeft[bufIxM2Delay];
+		float right = REVERB_FEEDBACK * bufRight[bufIxM2Delay];
 
-		buf[bufIx] = (reverbLeft * feedbackLevel) + (leftSample + rightSample) / 2.0f;
+		// Single-pole IIR filter found on real devices
+		bufLeft[bufIxP1] = bufLeft[bufIx] + (left - bufLeft[bufIx]) * LPF_VALUE;
+		bufRight[bufIxP1] = bufRight[bufIx] + (right - bufRight[bufIx]) * LPF_VALUE;
 
-		if (rampCount < rampTarget) {
-			// Linearly ramp up reverb/feedback levels over RAMP_TIME (after parameter change)
-			rampCount++;
-			if (rampCount == rampTarget) {
-				reverbLevel = targetReverbLevel;
-				feedbackLevel = targetFeedbackLevel;
-			} else {
-				reverbLevel += reverbLevelRampInc;
-				feedbackLevel += feedbackLevelRampInc;
-			}
-		}
+		outLeft[sampleIx] = bufLeft[bufIxP1];
+		outRight[sampleIx] = bufRight[bufIxP1];
+
+		left = inLeft[sampleIx] * fade;
+		right = inRight[sampleIx] * fade;
+
+		// Store attenuated input samples by directly adding to corresponding ring buffer locations
+		bufLeft[bufIxMDelay] += right;
+		bufRight[bufIxMDelay] += left;
+		bufLeft[bufIx] += left;
+		bufRight[bufIx] += right;
+
+		bufIx = bufIxP1;
 	}
 }
 
@@ -108,18 +110,15 @@ void DelayReverb::reset() {
 
 void DelayReverb::resetBuffer() {
 	bufIx = 0;
-	if (buf != NULL) {
-		memset(buf, 0, bufSize * sizeof(float));
+	if (bufLeft != NULL) {
+		memset(bufLeft, 0, bufSize * sizeof(float));
+	}
+	if (bufRight != NULL) {
+		memset(bufRight, 0, bufSize * sizeof(float));
 	}
 }
 
 void DelayReverb::resetParameters() {
-	leftDelay = leftDelaySeconds * sampleRate;
-	rightDelay = rightDelaySeconds * sampleRate;
-
-	rampCount = 0;
-	reverbLevel = 0;
-	feedbackLevel = 0;
-	feedbackLevelRampInc = targetFeedbackLevel / rampTarget;
-	reverbLevelRampInc = targetReverbLevel / rampTarget;
+	delay = REVERB_DELAY[0];
+	fade = REVERB_FADE[0];
 }

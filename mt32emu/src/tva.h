@@ -22,27 +22,31 @@ namespace MT32Emu {
 
 class Part;
 
-// When entering nextPhase, targetPhase is immediately incremented, and the descriptions/names below represent
-// their use after the increment.
+// Note that when entering nextPhase, newPhase is set to phase + 1, and the descriptions/names below refer to
+// newPhase's value.
 enum {
-	// When this is the target phase, level[0] is targeted within time[0], and velocity potentially affects time
+	// In this phase, the base amp (as calculated in calcBasicAmp()) is targeted with an instant time.
+	// This phase is entered by reset() only if time[0] != 0.
+	TVA_PHASE_BASIC = 0,
+
+	// In this phase, level[0] is targeted within time[0], and velocity potentially affects time
 	TVA_PHASE_ATTACK = 1,
 
-	// When this is the target phase, level[1] is targeted within time[1]
+	// In this phase, level[1] is targeted within time[1]
 	TVA_PHASE_2 = 2,
 
-	// When this is the target phase, level[2] is targeted within time[2]
+	// In this phase, level[2] is targeted within time[2]
 	TVA_PHASE_3 = 3,
 
-	// When this is the target phase, level[3] is targeted within time[3]
+	// In this phase, level[3] is targeted within time[3]
 	TVA_PHASE_4 = 4,
 
-	// When this is the target phase, immediately goes to PHASE_RELEASE unless the poly is set to sustain.
+	// In this phase, immediately goes to PHASE_RELEASE unless the poly is set to sustain.
 	// Aborts the partial if level[3] is 0.
 	// Otherwise level[3] is continued, no phase change will occur until some external influence (like pedal release)
 	TVA_PHASE_SUSTAIN = 5,
 
-	// 0 is targeted within time[4] (the time calculation is quite different from the other phases)
+	// In this phase, 0 is targeted within time[4] (the time calculation is quite different from the other phases)
 	TVA_PHASE_RELEASE = 6,
 
 	// It's PHASE_DEAD, Jim.
@@ -65,15 +69,18 @@ private:
 	int veloAmpSubtraction;
 	int keyTimeSubtraction;
 
-	int targetPhase;
+	int interruptCountdown;
+	int phase;
 	Bit32u currentAmp;
 	unsigned int largeAmpInc;
 
 	// See comment at the top of tva.cpp for an explanation on the meaning of these variables.
-	Bit8u la32TargetAmp;
+	Bit8u la32AmpTarget;
 	Bit8u la32AmpIncrement;
 
-	void setAmpIncrement(Bit8u ampIncrement);
+	void startRamp(Bit8u newLA32AmpTarget, Bit8u newLA32AmpIncrement, int newPhase);
+	void end(int newPhase);
+	//void setAmpIncrement(Bit8u ampIncrement);
 	void nextPhase();
 
 public:
