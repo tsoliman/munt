@@ -15,6 +15,7 @@
  *  along with this program.  If not, see <http://www.gnu.org/licenses/>.
  */
 
+#include <cmath>
 #include <cstring>
 #include "mt32emu.h"
 #include "delayReverb.h"
@@ -25,33 +26,30 @@ using namespace MT32Emu;
 // The values below are found via analysis of digital samples
 
 const float REVERB_DELAY[8] = {0.012531f, 0.0195f, 0.03f, 0.0465625f, 0.070625f, 0.10859375f, 0.165f, 0.25f};
-const float REVERB_FADE[8] = {0.0f, 0.072265218f, 0.120255297f, 0.192893979f, 0.288687407f, 0.384667566f, 0.504922864f, 0.745338317f};
-const float REVERB_FEEDBACK = -175.0f / 256.0f;
+const float REVERB_FADE[8] = {0.0f, -0.049400051f, -0.08220577f, -0.131861118f, -0.197344907f, -0.262956344f, -0.345162114f, -0.509508615f};
+const float REVERB_FEEDBACK67 = -0.629960524947437f; // = -EXP2F(-2 / 3)
+const float REVERB_FEEDBACK = -0.682034520443118f; // = -EXP2F(-53 / 96)
 const float LPF_VALUE = 0.594603558f; // = EXP2F(-0.75f)
 
 DelayReverb::DelayReverb() {
-	bufLeft = NULL;
-	bufRight = NULL;
+	buf = NULL;
 	sampleRate = 0;
 	resetParameters();
 }
 
 DelayReverb::~DelayReverb() {
-	delete[] bufLeft;
-	delete[] bufRight;
+	delete[] buf;
 }
 
 void DelayReverb::setSampleRate(unsigned int newSampleRate) {
 	if (newSampleRate != sampleRate) {
 		sampleRate = newSampleRate;
 
-		delete[] bufLeft;
-		delete[] bufRight;
+		delete[] buf;
 
 		// If we ever need a speedup, set bufSize to EXP2F(ceil(log2(bufSize))) and use & instead of % to find buf indexes
-		bufSize = Bit32u(2.0f * REVERB_DELAY[7] * sampleRate);
-		bufLeft = new float[bufSize];
-		bufRight = new float[bufSize];
+		bufSize = Bit32u(2.0f * REVERB_DELAY[7] * sampleRate) + 512;
+		buf = new float[bufSize];
 
 		reset();
 	}
@@ -62,44 +60,40 @@ void DelayReverb::setParameters(Bit8u /*mode*/, Bit8u time, Bit8u level) {
 	// Time in samples between impulse responses
 	delay = Bit32u(REVERB_DELAY[time] * sampleRate);
 
+	if (time < 6) {
+		feedback = REVERB_FEEDBACK;
+	} else {
+		feedback = REVERB_FEEDBACK67;
+	}
+
 	// Fading speed, i.e. amplitude ratio of neighbor responses
 	fade = REVERB_FADE[level];
 	resetBuffer();
 }
 
 void DelayReverb::process(const float *inLeft, const float *inRight, float *outLeft, float *outRight, unsigned long numSamples) {
-	if ((bufLeft == NULL) || (bufRight == NULL)) {
+	if (buf == NULL) {
 		return;
 	}
 
 	for (unsigned int sampleIx = 0; sampleIx < numSamples; sampleIx++) {
 
 		// Since speed isn't likely an issue here, we use a simple approach for ring buffer indexing
-		Bit32u bufIxP1 = (bufIx + 1) % bufSize;
+		Bit32u bufIxM1 = (bufSize + bufIx - 1) % bufSize;
 		Bit32u bufIxMDelay = (bufSize + bufIx - delay) % bufSize;
 		Bit32u bufIxM2Delay = (bufSize + bufIx - delay - delay) % bufSize;
 
-		// Attenuate each next response
-		float left = REVERB_FEEDBACK * bufLeft[bufIxM2Delay];
-		float right = REVERB_FEEDBACK * bufRight[bufIxM2Delay];
+		// Attenuated input samples and feedback response are directly added to the current ring buffer location
+		float sample = fade * (inLeft[sampleIx] + inRight[sampleIx]) + feedback * buf[bufIxM2Delay];
 
 		// Single-pole IIR filter found on real devices
-		bufLeft[bufIxP1] = bufLeft[bufIx] + (left - bufLeft[bufIx]) * LPF_VALUE;
-		bufRight[bufIxP1] = bufRight[bufIx] + (right - bufRight[bufIx]) * LPF_VALUE;
+		buf[bufIx] = buf[bufIxM1] + (sample - buf[bufIxM1]) * LPF_VALUE;
 
-		outLeft[sampleIx] = bufLeft[bufIxP1];
-		outRight[sampleIx] = bufRight[bufIxP1];
+		// Output left channel by Delay samples earlier
+		outLeft[sampleIx] = buf[bufIxMDelay];
+		outRight[sampleIx] = buf[bufIxM2Delay];
 
-		left = inLeft[sampleIx] * fade;
-		right = inRight[sampleIx] * fade;
-
-		// Store attenuated input samples by directly adding to corresponding ring buffer locations
-		bufLeft[bufIxMDelay] += right;
-		bufRight[bufIxMDelay] += left;
-		bufLeft[bufIx] += left;
-		bufRight[bufIx] += right;
-
-		bufIx = bufIxP1;
+		bufIx = (bufIx + 1) % bufSize;
 	}
 }
 
@@ -110,15 +104,29 @@ void DelayReverb::reset() {
 
 void DelayReverb::resetBuffer() {
 	bufIx = 0;
-	if (bufLeft != NULL) {
-		memset(bufLeft, 0, bufSize * sizeof(float));
-	}
-	if (bufRight != NULL) {
-		memset(bufRight, 0, bufSize * sizeof(float));
+	if (buf != NULL) {
+		memset(buf, 0, bufSize * sizeof(float));
 	}
 }
 
 void DelayReverb::resetParameters() {
-	delay = REVERB_DELAY[0];
+	delay = Bit32u(REVERB_DELAY[0] * sampleRate);
+	feedback = REVERB_FEEDBACK;
 	fade = REVERB_FADE[0];
+}
+
+bool DelayReverb::isActive() const {
+	// Quick hack: Return true iff all samples in the left buffer are the same and
+	// all samples in the right buffers are the same (within the sample output threshold).
+	if (bufSize == 0) {
+		return false;
+	}
+	Bit32s last = (Bit32s)floor(buf[0] * 8192.0f);
+	for (unsigned int i = 1; i < bufSize; i++) {
+		Bit32s s = (Bit32s)floor(buf[i] * 8192.0f);
+		if (s != last) {
+			return true;
+		}
+	}
+	return false;
 }
