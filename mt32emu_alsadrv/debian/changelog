@@ -1,3 +1,9 @@
+mt32emu-alsadrv (0.1.3.99+git20110429+3ea9606-1) experimental; urgency=low
+
+  * New upstream snapshot
+
+ -- Tarek Soliman <tarek@bashasoliman.com>  Fri, 29 Apr 2011 20:30:26 -0500
+
 mt32emu-alsadrv (0.1.3.99+git20110422+cf2404e-1) experimental; urgency=low
 
   * New upstream snapshot
