@@ -34,7 +34,7 @@ Poly::Poly(Part *usePart) {
 void Poly::reset(unsigned int newKey, unsigned int newVelocity, bool newSustain, Partial **newPartials) {
 	if (isActive()) {
 		// FIXME: Throw out some big ugly debug output with a lot of exclamation marks - we should never get here
-		abort();
+		terminate();
 	}
 
 	key = newKey;
@@ -87,7 +87,20 @@ bool Poly::startDecay() {
 	return true;
 }
 
-void Poly::abort() {
+bool Poly::startAbort() {
+	if (state == POLY_Inactive) {
+		return false;
+	}
+	for (int t = 0; t < 4; t++) {
+		Partial *partial = partials[t];
+		if (partial != NULL) {
+			partial->startAbort();
+		}
+	}
+	return true;
+}
+
+void Poly::terminate() {
 	if (state == POLY_Inactive) {
 		return;
 	}
@@ -114,6 +127,12 @@ void Poly::backupCacheToPartials(PatchCache cache[4]) {
 	}
 }
 
+/**
+ * Returns the internal key identifier.
+ * For non-rhythm, this is within the range 12 to 108.
+ * For rhythm on MT-32, this is 0 or 1 (special cases) or within the range 24 to 87.
+ * For rhythm on devices with extended PCM sounds (e.g. CM-32L), this is 0, 1 or 24 to 108
+ */
 unsigned int Poly::getKey() const {
 	return key;
 }

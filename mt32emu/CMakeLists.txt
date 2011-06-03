@@ -4,11 +4,38 @@ set(libmt32emu_VERSION_MAJOR 0)
 set(libmt32emu_VERSION_MINOR 1)
 set(libmt32emu_VERSION_PATCH 3)
 
+# Only headers that need to be installed should be listed here:
+set(libmt32emu_HEADERS
+  src/File.h
+  src/mt32emu.h
+  src/LA32Ramp.h
+  src/Part.h
+  src/Partial.h
+  src/Poly.h
+  src/Structures.h
+  src/Synth.h
+  src/Tables.h
+  src/TVA.h
+  src/TVF.h
+  src/TVP.h
+)
+
+if(CMAKE_COMPILER_IS_GNUCXX OR CMAKE_CXX_COMPILER MATCHES "(^|/)clang\\+\\+$")
+  add_definitions(-Wall -Wextra -Wnon-virtual-dtor -Wshadow -ansi -pedantic)
+endif()
+
+foreach(HEADER ${libmt32emu_HEADERS})
+  get_filename_component(FILENAME "${HEADER}" NAME)
+  configure_file(${HEADER} "${CMAKE_CURRENT_BINARY_DIR}/include/mt32emu/${FILENAME}" COPYONLY)
+endforeach(HEADER)
+
 add_library(mt32emu STATIC
   src/ANSIFile.cpp
+  src/AReverbModel.cpp
   src/DelayReverb.cpp
-#  src/externalInterface.cpp
   src/File.cpp
+  src/FreeverbModel.cpp
+  src/LA32Ramp.cpp
   src/Part.cpp
   src/Partial.cpp
   src/PartialManager.cpp
@@ -22,23 +49,20 @@ add_library(mt32emu STATIC
   src/freeverb/comb.cpp
   src/freeverb/revmodel.cpp
 )
+
 install(TARGETS mt32emu
   ARCHIVE DESTINATION lib
 )
-install(FILES
-  src/File.h
-  src/mt32emu.h
-  src/Part.h
-  src/Partial.h
-  src/Poly.h
-  src/Structures.h
-  src/Synth.h
-  src/Tables.h
-  src/TVA.h
-  src/TVF.h
-  src/TVP.h
-  DESTINATION include/mt32emu
+install(DIRECTORY
+  "${CMAKE_CURRENT_BINARY_DIR}/include/mt32emu"
+  DESTINATION include
 )
+
+# Locations are exported for the benefit of a higher-level CMakeLists.txt.
+# These lines are irrelevant if compiling stand-alone.
+set(MT32EMU_INCLUDE_DIR "${CMAKE_CURRENT_BINARY_DIR}/include" PARENT_SCOPE)
+get_target_property(MT32EMU_LIBRARY mt32emu LOCATION)
+set(MT32EMU_LIBRARY "${MT32EMU_LIBRARY}" PARENT_SCOPE)
 
 # build a CPack driven installer package
 include(InstallRequiredSystemLibraries)

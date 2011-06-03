@@ -23,22 +23,21 @@ namespace MT32Emu {
 class TVF {
 private:
 	const Partial * const partial;
+	LA32Ramp *cutoffModifierRamp;
 	const TimbreParam::PartialParam *partialParam;
 
 	Bit8u baseCutoff;
 	int keyTimeSubtraction;
 	unsigned int levelMult;
 
-	unsigned int targetPhase;
-	Bit32u current;
 	Bit8u target;
-	Bit8u increment;
-	unsigned int bigIncrement;
-	void setIncrement(Bit8u ampIncrement);
+	unsigned int phase;
+
+	void startRamp(Bit8u newTarget, Bit8u newIncrement, int newPhase);
 	void nextPhase();
 
 public:
-	TVF(const Partial *partial);
+	TVF(const Partial *partial, LA32Ramp *cutoffModifierRamp);
 	void reset(const TimbreParam::PartialParam *partialParam, Bit32u basePitch);
 	// Returns the base cutoff (without envelope modification).
 	// The base cutoff is calculated when reset() is called and remains static
@@ -46,12 +45,7 @@ public:
 	// Barring bugs, the number returned is confirmed accurate
 	// (based on specs from Mok).
 	Bit8u getBaseCutoff() const;
-	// This function needs to be called at each sample.
-	// It will return a number between 0.0f and 255.0f.
-	// Exactly how it should be applied to the cutoff is currently unknown.
-	// *Possibly* it needs to be multiplied with the cutoff in some manner,
-	// but it may just need to be added.
-	float nextCutoffModifier();
+	void handleInterrupt();
 	void startDecay();
 };
 

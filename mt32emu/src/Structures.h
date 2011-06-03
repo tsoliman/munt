@@ -20,8 +20,6 @@
 
 namespace MT32Emu {
 
-const unsigned int MAX_SAMPLE_OUTPUT = 4096;
-
 // MT32EMU_MEMADDR() converts from sysex-padded, MT32EMU_SYSEXMEMADDR converts to it
 // Roland provides documentation using the sysex-padded addresses, so we tend to use that in code and output
 #define MT32EMU_MEMADDR(x) ((((x) & 0x7f0000) >> 2) | (((x) & 0x7f00) >> 1) | ((x) & 0x7f))
@@ -124,6 +122,16 @@ struct PatchParam {
 	Bit8u reverbSwitch;  // REVERB SWITCH 0-1 (OFF,ON)
 	Bit8u dummy; // (DUMMY)
 } MT32EMU_ALIGN_PACKED;
+
+const unsigned int SYSTEM_MASTER_TUNE_OFF = 0;
+const unsigned int SYSTEM_REVERB_MODE_OFF = 1;
+const unsigned int SYSTEM_REVERB_TIME_OFF = 2;
+const unsigned int SYSTEM_REVERB_LEVEL_OFF = 3;
+const unsigned int SYSTEM_RESERVE_SETTINGS_START_OFF = 4;
+const unsigned int SYSTEM_RESERVE_SETTINGS_END_OFF = 12;
+const unsigned int SYSTEM_CHAN_ASSIGN_START_OFF = 13;
+const unsigned int SYSTEM_CHAN_ASSIGN_END_OFF = 21;
+const unsigned int SYSTEM_MASTER_VOL_OFF = 22;
 
 struct MemParams {
 	// NOTE: The MT-32 documentation only specifies PatchTemp areas for parts 1-8.

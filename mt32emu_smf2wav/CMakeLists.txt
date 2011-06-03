@@ -1,6 +1,6 @@
 cmake_minimum_required(VERSION 2.6)
 
-set(CMAKE_MODULE_PATH ${CMAKE_MODULE_PATH} "${CMAKE_SOURCE_DIR}/../cmake/Modules/")
+set(CMAKE_MODULE_PATH ${CMAKE_MODULE_PATH} "${CMAKE_CURRENT_SOURCE_DIR}/../cmake/Modules/")
 
 project(mt32emu-smf2wav CXX)
 set(mt32emu_smf2wav_VERSION_MAJOR 0)
@@ -23,6 +23,10 @@ include_directories("${PROJECT_BINARY_DIR}")
 
 include_directories(libsmf/src)
 add_subdirectory(libsmf)
+
+if(CMAKE_COMPILER_IS_GNUCXX OR CMAKE_CXX_COMPILER MATCHES "(^|/)clang\\+\\+$")
+  add_definitions(-Wall -Wextra -Wnon-virtual-dtor -Wshadow -ansi -pedantic)
+endif()
 
 add_executable(mt32emu-smf2wav
   src/mt32emu-smf2wav.cpp

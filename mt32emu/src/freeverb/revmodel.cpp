@@ -14,16 +14,16 @@ revmodel::revmodel(float scaletuning)
 
 	// Allocate buffers for the components
 	for (i = 0; i < numcombs; i++) {
-		bufsize = scaletuning * combtuning[i];
+		bufsize = int(scaletuning * combtuning[i]);
 		combL[i].setbuffer(new float[bufsize], bufsize);
-		bufsize += scaletuning * stereospread;
+		bufsize += int(scaletuning * stereospread);
 		combR[i].setbuffer(new float[bufsize], bufsize);
 	}
 	for (i = 0; i < numallpasses; i++) {
-		bufsize = scaletuning * allpasstuning[i];
+		bufsize = int(scaletuning * allpasstuning[i]);
 		allpassL[i].setbuffer(new float[bufsize], bufsize);
 		allpassL[i].setfeedback(0.5f);
-		bufsize += scaletuning * stereospread;
+		bufsize += int(scaletuning * stereospread);
 		allpassR[i].setbuffer(new float[bufsize], bufsize);
 		allpassR[i].setfeedback(0.5f);
 	}
@@ -95,11 +95,13 @@ void revmodel::process(const float *inputL, const float *inputR, float *outputL,
 		filtprev2 += (filtprev1 - filtprev2) * filtval;
 		input = filtprev2;
 
+		int s = -1;
 		// Accumulate comb filters in parallel
 		for (i=0; i<numcombs; i++)
 		{
-			outL += combL[i].process(input);
-			outR += combR[i].process(input);
+			outL += s * combL[i].process(input);
+			outR += s * combR[i].process(input);
+			s = -s;
 		}
 
 		// Feed through allpasses in series

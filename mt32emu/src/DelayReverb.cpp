@@ -48,15 +48,15 @@ const float LPF_VALUE = 0.594603558f; // = EXP2F(-0.75f)
 DelayReverb::DelayReverb() {
 	buf = NULL;
 	sampleRate = 0;
-	setParameters(3, 0, 0);
+	setParameters(0, 0);
 }
 
 DelayReverb::~DelayReverb() {
 	delete[] buf;
 }
 
-void DelayReverb::setSampleRate(unsigned int newSampleRate) {
-	if (newSampleRate != sampleRate) {
+void DelayReverb::open(unsigned int newSampleRate) {
+	if (newSampleRate != sampleRate || buf == NULL) {
 		sampleRate = newSampleRate;
 
 		delete[] buf;
@@ -66,12 +66,25 @@ void DelayReverb::setSampleRate(unsigned int newSampleRate) {
 		buf = new float[bufSize];
 
 		recalcParameters();
+
+		// mute buffer
+		bufIx = 0;
+		if (buf != NULL) {
+			for (unsigned int i = 0; i < bufSize; i++) {
+				buf[i] = 0.0f;
+			}
+		}
 	}
 	// FIXME: IIR filter value depends on sample rate as well
 }
 
+void DelayReverb::close() {
+	delete[] buf;
+	buf = NULL;
+}
+
 // This method will always trigger a flush of the buffer
-void DelayReverb::setParameters(Bit8u /*mode*/, Bit8u newTime, Bit8u newLevel) {
+void DelayReverb::setParameters(Bit8u newTime, Bit8u newLevel) {
 	time = newTime;
 	level = newLevel;
 	recalcParameters();
@@ -93,13 +106,6 @@ void DelayReverb::recalcParameters() {
 
 	// Fading speed, i.e. amplitude ratio of neighbor responses
 	fade = REVERB_FADE[level];
-
-	bufIx = 0;
-	if (buf != NULL) {
-		for (unsigned int i = 0; i < bufSize; i++) {
-			buf[i] = 0.0f;
-		}
-	}
 }
 
 void DelayReverb::process(const float *inLeft, const float *inRight, float *outLeft, float *outRight, unsigned long numSamples) {
@@ -125,11 +131,6 @@ void DelayReverb::process(const float *inLeft, const float *inRight, float *outL
 
 		bufIx = (bufSize + bufIx - 1) % bufSize;
 	}
-}
-
-// Resets to default parameters and flushes the buffer
-void DelayReverb::reset() {
-	setParameters(3, 0, 0);
 }
 
 bool DelayReverb::isActive() const {

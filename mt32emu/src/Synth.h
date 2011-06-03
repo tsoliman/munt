@@ -20,8 +20,6 @@
 
 #include <cstdarg>
 
-class revmodel;
-
 namespace MT32Emu {
 
 class File;
@@ -54,7 +52,7 @@ enum DACInputMode {
 	// 15 13 12 11 10 09 08 07 06 05 04 03 02 01 00 XX
 	DACInputMode_GENERATION1,
 
-	// Re-orders the LA32 output bits as in later geneerations (personally confirmed on my CM-32L - KG).
+	// Re-orders the LA32 output bits as in later generations (personally confirmed on my CM-32L - KG).
 	// Bit order at DAC (where each number represents the original LA32 output bit number):
 	// 15 13 12 11 10 09 08 07 06 05 04 03 02 01 00 14
 	DACInputMode_GENERATION2
@@ -99,11 +97,11 @@ struct SynthProperties {
 	bool useReverb;
 	// Deprecated - ignored. Use Synth::setReverbOverridden() instead.
 	bool useDefaultReverb;
-	// Deprecated - ignored. Use Synth::setReverbParameters() instead.
+	// Deprecated - ignored. Use Synth::playSysex*() to configure reverb instead.
 	unsigned char reverbType;
-	// Deprecated - ignored. Use Synth::setReverbParameters() instead.
+	// Deprecated - ignored. Use Synth::playSysex*() to configure reverb instead.
 	unsigned char reverbTime;
-	// Deprecated - ignored. Use Synth::setReverbParameters() instead.
+	// Deprecated - ignored. Use Synth::playSysex*() to configure reverb instead.
 	unsigned char reverbLevel;
 	// The name of the directory in which the ROM and data files are stored (with trailing slash/backslash)
 	// Not used if "openFile" is set. May be NULL in any case.
@@ -125,7 +123,7 @@ struct SynthProperties {
 // function
 typedef void (*recalcStatusCallback)(int percDone);
 
-typedef void (*FloatToBit16sFunc)(Bit16s *target, const float *source, Bit32u len);
+typedef void (*FloatToBit16sFunc)(Bit16s *target, const float *source, Bit32u len, float outputGain);
 
 const Bit8u SYSEX_MANUFACTURER_ROLAND = 0x41;
 
@@ -280,35 +278,25 @@ public:
 class ReverbModel {
 public:
 	virtual ~ReverbModel() {}
-	virtual void setSampleRate(unsigned int sampleRate) = 0;
-	virtual void setParameters(Bit8u mode, Bit8u time, Bit8u level) = 0;
+	// After construction or a close(), open() will be called at least once before any other call (with the exception of close()).
+	virtual void open(unsigned int sampleRate) = 0;
+	// May be called multiple times without an open() in between.
+	virtual void close() = 0;
+	virtual void setParameters(Bit8u time, Bit8u level) = 0;
 	virtual void process(const float *inLeft, const float *inRight, float *outLeft, float *outRight, unsigned long numSamples) = 0;
-	virtual void reset() = 0;
 	virtual bool isActive() const = 0;
-};
-
-class FreeverbModel : public ReverbModel {
-	revmodel *freeverb;
-	float scaletuning;
-public:
-	FreeverbModel();
-	~FreeverbModel();
-	void setSampleRate(unsigned int sampleRate);
-	void setParameters(Bit8u mode, Bit8u time, Bit8u level);
-	void process(const float *inLeft, const float *inRight, float *outLeft, float *outRight, unsigned long numSamples);
-	void reset();
-	bool isActive() const;
 };
 
 class Synth {
 friend class Part;
 friend class RhythmPart;
+friend class Poly;
 friend class Partial;
 friend class Tables;
 friend class MemoryRegion;
 friend class TVA;
-friend class TVP;
 friend class TVF;
+friend class TVP;
 private:
 	PatchTempMemoryRegion *patchTempMemoryRegion;
 	RhythmTempMemoryRegion *rhythmTempMemoryRegion;
@@ -340,12 +328,15 @@ private:
 
 	MemParams mt32ram, mt32default;
 
+	ReverbModel *reverbModels[4];
 	ReverbModel *reverbModel;
-	ReverbModel *delayReverbModel;
 	bool reverbEnabled;
 	bool reverbOverridden;
 
 	FloatToBit16sFunc la32FloatToBit16sFunc;
+	FloatToBit16sFunc reverbFloatToBit16sFunc;
+	float outputGain;
+	float reverbOutputGain;
 
 	float masterTune;
 
@@ -354,23 +345,40 @@ private:
 	PartialManager *partialManager;
 	Part *parts[9];
 
-	float tmpBufPartialLeft[MAX_SAMPLE_OUTPUT];
-	float tmpBufPartialRight[MAX_SAMPLE_OUTPUT];
-	float tmpBufMixLeft[MAX_SAMPLE_OUTPUT];
-	float tmpBufMixRight[MAX_SAMPLE_OUTPUT];
-	float tmpBufReverbOutLeft[MAX_SAMPLE_OUTPUT];
-	float tmpBufReverbOutRight[MAX_SAMPLE_OUTPUT];
+	// FIXME: We can reorganise things so that we don't need all these separate tmpBuf, tmp and prerender buffers.
+	// This should be rationalised when things have stabilised a bit (if prerender buffers don't die in the mean time).
 
-	Bit16s tmpNonReverbLeft[MAX_SAMPLE_OUTPUT];
-	Bit16s tmpNonReverbRight[MAX_SAMPLE_OUTPUT];
-	Bit16s tmpReverbDryLeft[MAX_SAMPLE_OUTPUT];
-	Bit16s tmpReverbDryRight[MAX_SAMPLE_OUTPUT];
-	Bit16s tmpReverbWetLeft[MAX_SAMPLE_OUTPUT];
-	Bit16s tmpReverbWetRight[MAX_SAMPLE_OUTPUT];
+	float tmpBufPartialLeft[MAX_SAMPLES_PER_RUN];
+	float tmpBufPartialRight[MAX_SAMPLES_PER_RUN];
+	float tmpBufMixLeft[MAX_SAMPLES_PER_RUN];
+	float tmpBufMixRight[MAX_SAMPLES_PER_RUN];
+	float tmpBufReverbOutLeft[MAX_SAMPLES_PER_RUN];
+	float tmpBufReverbOutRight[MAX_SAMPLES_PER_RUN];
+
+	Bit16s tmpNonReverbLeft[MAX_SAMPLES_PER_RUN];
+	Bit16s tmpNonReverbRight[MAX_SAMPLES_PER_RUN];
+	Bit16s tmpReverbDryLeft[MAX_SAMPLES_PER_RUN];
+	Bit16s tmpReverbDryRight[MAX_SAMPLES_PER_RUN];
+	Bit16s tmpReverbWetLeft[MAX_SAMPLES_PER_RUN];
+	Bit16s tmpReverbWetRight[MAX_SAMPLES_PER_RUN];
+
+	// These ring buffers are only used to simulate delays present on the real device.
+	// In particular, when a partial needs to be aborted to free it up for use by a new Poly,
+	// the controller will busy-loop waiting for the sound to finish.
+	Bit16s prerenderNonReverbLeft[MAX_PRERENDER_SAMPLES];
+	Bit16s prerenderNonReverbRight[MAX_PRERENDER_SAMPLES];
+	Bit16s prerenderReverbDryLeft[MAX_PRERENDER_SAMPLES];
+	Bit16s prerenderReverbDryRight[MAX_PRERENDER_SAMPLES];
+	Bit16s prerenderReverbWetLeft[MAX_PRERENDER_SAMPLES];
+	Bit16s prerenderReverbWetRight[MAX_PRERENDER_SAMPLES];
+	int prerenderReadIx;
+	int prerenderWriteIx;
 
 	SynthProperties myProp;
 
-	bool loadPreset(File *file);
+	bool prerender();
+	void copyPrerender(Bit16s *nonReverbLeft, Bit16s *nonReverbRight, Bit16s *reverbDryLeft, Bit16s *reverbDryRight, Bit16s *reverbWetLeft, Bit16s *reverbWetRight, Bit32u pos, Bit32u len);
+	void checkPrerender(Bit16s *nonReverbLeft, Bit16s *nonReverbRight, Bit16s *reverbDryLeft, Bit16s *reverbDryRight, Bit16s *reverbWetLeft, Bit16s *reverbWetRight, Bit32u &pos, Bit32u &len);
 	void doRenderStreams(Bit16s *nonReverbLeft, Bit16s *nonReverbRight, Bit16s *reverbDryLeft, Bit16s *reverbDryRight, Bit16s *reverbWetLeft, Bit16s *reverbWetRight, Bit32u len);
 
 	void playAddressedSysex(unsigned char channel, const Bit8u *sysex, Bit32u len);
@@ -387,7 +395,13 @@ private:
 	bool initPCMList(Bit16u mapAddress, Bit16u count);
 	bool initTimbres(Bit16u mapAddress, Bit16u offset, int timbreCount, int startTimbre, bool compressed);
 	bool initCompressedTimbre(int drumNum, const Bit8u *mem, unsigned int memLen);
-	bool refreshSystem();
+
+	void refreshSystemMasterTune();
+	void refreshSystemReverbParameters();
+	void refreshSystemReserveSettings();
+	void refreshSystemChanAssign();
+	void refreshSystemMasterVol();
+	void refreshSystem();
 	void reset();
 
 	unsigned int getSampleRate() const;
@@ -421,14 +435,17 @@ public:
 	void playSysexWithoutHeader(unsigned char device, unsigned char command, const Bit8u *sysex, Bit32u len);
 	void writeSysex(unsigned char channel, const Bit8u *sysex, Bit32u len);
 
-	void setReverbModel(ReverbModel *reverbModel);
-	void setDelayReverbModel(ReverbModel *reverbModel);
 	void setReverbEnabled(bool reverbEnabled);
 	bool isReverbEnabled() const;
 	void setReverbOverridden(bool reverbOverridden);
 	bool isReverbOverridden() const;
-	void setReverbParameters(Bit8u mode, Bit8u time, Bit8u level);
 	void setDACInputMode(DACInputMode mode);
+
+	// Sets output gain factor. Applied to all output samples and unrelated with the synth's Master volume.
+	void setOutputGain(float);
+
+	// Sets output gain factor for the reverb wet output. setOutputGain() doesn't change reverb output gain.
+	void setReverbOutputGain(float);
 
 	// Renders samples to the specified output stream.
 	// The length is in frames, not bytes (in 16-bit stereo,
@@ -439,6 +456,9 @@ public:
 	void renderStreams(Bit16s *nonReverbLeft, Bit16s *nonReverbRight, Bit16s *reverbDryLeft, Bit16s *reverbDryRight, Bit16s *reverbWetLeft, Bit16s *reverbWetRight, Bit32u len);
 
 	// Returns true when there is at least one active partial, otherwise false.
+	bool hasActivePartials() const;
+
+	// Returns true if hasActivePartials() returns true, or reverb is (somewhat unreliably) detected as being active.
 	bool isActive() const;
 
 	const Partial *getPartial(unsigned int partialNum) const;

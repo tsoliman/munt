@@ -351,6 +351,9 @@ void Part::setPan(unsigned int midiPan) {
 	//synth->printDebug("%s (%s): Set pan to %d", name, currentInstr, panpot);
 }
 
+/**
+ * Applies key shift to a MIDI key and converts it into an internal key value in the range 12-108.
+ */
 unsigned int Part::midiKeyToKey(unsigned int midiKey, const char *debugAction) {
 	int key = midiKey + patchTemp->patch.keyShift;
 	if (key < 36) {
@@ -412,11 +415,23 @@ void Part::noteOn(unsigned int midiKey, unsigned int velocity) {
 	playPoly(patchCache, NULL, midiKey, key, velocity);
 }
 
+void Part::abortPoly(Poly *poly) {
+	if (poly->startAbort()) {
+		while (poly->isActive()) {
+			if (!synth->prerender()) {
+				synth->printDebug("%s (%s): Ran out of prerender space to abort poly gracefully", name, currentInstr);
+				poly->terminate();
+				break;
+			}
+		}
+	}
+}
+
 bool Part::abortFirstPoly(unsigned int key) {
 	for (std::list<Poly *>::iterator polyIt = activePolys.begin(); polyIt != activePolys.end(); polyIt++) {
 		Poly *poly = *polyIt;
 		if (poly->getKey() == key) {
-			poly->abort();
+			abortPoly(poly);
 			return true;
 		}
 	}
@@ -427,7 +442,7 @@ bool Part::abortFirstPoly(PolyState polyState) {
 	for (std::list<Poly *>::iterator polyIt = activePolys.begin(); polyIt != activePolys.end(); polyIt++) {
 		Poly *poly = *polyIt;
 		if (poly->getState() == polyState) {
-			poly->abort();
+			abortPoly(poly);
 			return true;
 		}
 	}
@@ -438,7 +453,7 @@ bool Part::abortFirstPoly() {
 	if (activePolys.empty()) {
 		return false;
 	}
-	activePolys.front()->abort();
+	abortPoly(activePolys.front());
 	return true;
 }
 

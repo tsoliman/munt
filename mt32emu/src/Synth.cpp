@@ -25,8 +25,12 @@
 #include "ANSIFile.h"
 #include "PartialManager.h"
 
+#if MT32EMU_USE_AREVERBMODEL == 1
+#include "AReverbModel.h"
+#else
+#include "FreeverbModel.h"
+#endif
 #include "DelayReverb.h"
-#include "freeverb/revmodel.h"
 
 namespace MT32Emu {
 
@@ -76,16 +80,17 @@ static inline Bit16s clipBit16s(Bit32s a) {
 	return a;
 }
 
-static void floatToBit16s_nice(Bit16s *target, const float *source, Bit32u len) {
+static void floatToBit16s_nice(Bit16s *target, const float *source, Bit32u len, float outputGain) {
+	float gain = outputGain * 16384.0f;
 	while (len--) {
 		// Since we're not shooting for accuracy here, don't worry about the rounding mode.
-		*target = clipBit16s((Bit32s)(*source * 16384.0f));
+		*target = clipBit16s((Bit32s)(*source * gain));
 		source++;
 		target++;
 	}
 }
 
-static void floatToBit16s_pure(Bit16s *target, const float *source, Bit32u len) {
+static void floatToBit16s_pure(Bit16s *target, const float *source, Bit32u len, float /*outputGain*/) {
 	while (len--) {
 		*target = clipBit16s((Bit32s)floor(*source * 8192.0f));
 		source++;
@@ -93,18 +98,29 @@ static void floatToBit16s_pure(Bit16s *target, const float *source, Bit32u len) 
 	}
 }
 
-static void floatToBit16s_generation1(Bit16s *target, const float *source, Bit32u len) {
+static void floatToBit16s_reverb(Bit16s *target, const float *source, Bit32u len, float outputGain) {
+	float gain = outputGain * 8192.0f;
 	while (len--) {
-		*target = clipBit16s((Bit32s)floor(*source * 8192.0f));
+		*target = clipBit16s((Bit32s)floor(*source * gain));
+		source++;
+		target++;
+	}
+}
+
+static void floatToBit16s_generation1(Bit16s *target, const float *source, Bit32u len, float outputGain) {
+	float gain = outputGain * 8192.0f;
+	while (len--) {
+		*target = clipBit16s((Bit32s)floor(*source * gain));
 		*target = (*target & 0x8000) | ((*target << 1) & 0x7FFE);
 		source++;
 		target++;
 	}
 }
 
-static void floatToBit16s_generation2(Bit16s *target, const float *source, Bit32u len) {
+static void floatToBit16s_generation2(Bit16s *target, const float *source, Bit32u len, float outputGain) {
+	float gain = outputGain * 8192.0f;
 	while (len--) {
-		*target = clipBit16s((Bit32s)floor(*source * 8192.0f));
+		*target = clipBit16s((Bit32s)floor(*source * gain));
 		*target = (*target & 0x8000) | ((*target << 1) & 0x7FFE) | ((*target >> 14) & 0x0001);
 		source++;
 		target++;
@@ -124,21 +140,33 @@ Bit8u Synth::calcSysexChecksum(const Bit8u *data, Bit32u len, Bit8u checksum) {
 
 Synth::Synth() {
 	isOpen = false;
-	reverbModel = NULL;
-	delayReverbModel = NULL;
 	reverbEnabled = true;
 	reverbOverridden = false;
-	setReverbModel(NULL); // Creates a default FreeverbModel
-	setDelayReverbModel(NULL); // Creates a default DelayReverb.
+
+#if MT32EMU_USE_AREVERBMODEL == 1
+	reverbModels[0] = new AReverbModel(&AReverbModel::REVERB_MODE_0_SETTINGS);
+	reverbModels[1] = new AReverbModel(&AReverbModel::REVERB_MODE_1_SETTINGS);
+	reverbModels[2] = new AReverbModel(&AReverbModel::REVERB_MODE_2_SETTINGS);
+#else
+	reverbModels[0] = new FreeverbModel(0.76f, 0.687770909f, 0.63f, 0, 0.5f);
+	reverbModels[1] = new FreeverbModel(2.0f, 0.712025098f, 0.86f, 1, 0.5f);
+	reverbModels[2] = new FreeverbModel(0.4f, 0.939522749f, 0.38f, 2, 0.05f);
+#endif
+
+	reverbModels[3] = new DelayReverb();
+	reverbModel = NULL;
 	setDACInputMode(DACInputMode_NICE);
+	setOutputGain(1.0f);
+	setReverbOutputGain(0.68f);
 	partialManager = NULL;
 	memset(parts, 0, sizeof(parts));
 }
 
 Synth::~Synth() {
 	close(); // Make sure we're closed and everything is freed
-	delete reverbModel;
-	delete delayReverbModel;
+	for (int i = 0; i < 4; i++) {
+		delete reverbModels[i];
+	}
 }
 
 int Synth::report(ReportType type, const void *data) {
@@ -164,28 +192,6 @@ void Synth::printDebug(const char *fmt, ...) {
 	va_end(ap);
 }
 
-void Synth::setReverbModel(ReverbModel *newReverbModel) {
-	delete reverbModel;
-	if (newReverbModel == NULL) {
-		newReverbModel = new FreeverbModel();
-	}
-	reverbModel = newReverbModel;
-	if (isOpen) {
-		setReverbParameters(mt32ram.system.reverbMode, mt32ram.system.reverbTime, mt32ram.system.reverbLevel);
-	}
-}
-
-void Synth::setDelayReverbModel(ReverbModel *newDelayReverbModel) {
-	delete delayReverbModel;
-	if (newDelayReverbModel == NULL) {
-		newDelayReverbModel = new DelayReverb();
-	}
-	delayReverbModel = newDelayReverbModel;
-	if (isOpen) {
-		setReverbParameters(mt32ram.system.reverbMode, mt32ram.system.reverbTime, mt32ram.system.reverbLevel);
-	}
-}
-
 void Synth::setReverbEnabled(bool newReverbEnabled) {
 	reverbEnabled = newReverbEnabled;
 }
@@ -202,33 +208,34 @@ bool Synth::isReverbOverridden() const {
 	return reverbOverridden;
 }
 
-void Synth::setReverbParameters(Bit8u mode, Bit8u time, Bit8u level) {
-	if (reverbOverridden) {
-		return;
-	}
-	if (mode == 3) {
-		delayReverbModel->setParameters(mode, time, level);
-	} else {
-		reverbModel->setParameters(mode, time, level);
-	}
-}
-
 void Synth::setDACInputMode(DACInputMode mode) {
 	switch(mode) {
 	case DACInputMode_GENERATION1:
 		la32FloatToBit16sFunc = floatToBit16s_generation1;
+		reverbFloatToBit16sFunc = floatToBit16s_reverb;
 		break;
 	case DACInputMode_GENERATION2:
 		la32FloatToBit16sFunc = floatToBit16s_generation2;
+		reverbFloatToBit16sFunc = floatToBit16s_reverb;
 		break;
 	case DACInputMode_PURE:
 		la32FloatToBit16sFunc = floatToBit16s_pure;
+		reverbFloatToBit16sFunc = floatToBit16s_pure;
 		break;
 	case DACInputMode_NICE:
 	default:
 		la32FloatToBit16sFunc = floatToBit16s_nice;
+		reverbFloatToBit16sFunc = floatToBit16s_reverb;
 		break;
 	}
+}
+
+void Synth::setOutputGain(float newOutputGain) {
+	outputGain = newOutputGain;
+}
+
+void Synth::setReverbOutputGain(float newReverbOutputGain) {
+	reverbOutputGain = newReverbOutputGain;
 }
 
 File *Synth::openFile(const char *filename, File::OpenMode mode) {
@@ -256,39 +263,6 @@ void Synth::closeFile(File *file) {
 		file->close();
 		delete file;
 	}
-}
-
-bool Synth::loadPreset(File *file) {
-	bool inSys = false;
-	Bit8u sysexBuf[MAX_SYSEX_SIZE];
-	Bit16u syslen = 0;
-	bool rc = true;
-	for (;;) {
-		Bit8u c;
-		if (!file->readBit8u(&c)) {
-			if (!file->isEOF()) {
-				rc = false;
-			}
-			break;
-		}
-		sysexBuf[syslen] = c;
-		if (inSys) {
-			syslen++;
-			if (c == 0xF7) {
-				playSysex(&sysexBuf[0], syslen);
-				inSys = false;
-				syslen = 0;
-			} else if (syslen == MAX_SYSEX_SIZE) {
-				printDebug("MAX_SYSEX_SIZE (%d) exceeded while processing preset, ignoring message", MAX_SYSEX_SIZE);
-				inSys = false;
-				syslen = 0;
-			}
-		} else if (c == 0xF0) {
-			syslen++;
-			inSys = true;
-		}
-	}
-	return rc;
 }
 
 LoadResult Synth::loadControlROM(const char *filename) {
@@ -353,10 +327,10 @@ LoadResult Synth::loadPCMROM(const char *filename) {
 			log = log | (short)(bit << (15 - u));
 		}
 		bool negative = log < 0;
-		log = (~log) & 0x7FFF;
+		log &= 0x7FFF;
 
-		// CONFIRMED from sample analysis to be 99.99%+ accurate
-		float lin = EXP2F(log / -2048.0f);
+		// CONFIRMED from sample analysis to be 99.99%+ accurate with current TVA multiplier
+		float lin = EXP2F((32787 - log) / -2048.0f);
 
 		if (negative) {
 			lin = -lin;
@@ -443,12 +417,14 @@ bool Synth::open(SynthProperties &useProp) {
 	if (isOpen) {
 		return false;
 	}
+	prerenderReadIx = prerenderWriteIx = 0;
 	myProp = useProp;
 	tables.init(this);
-	reverbModel->reset();
-	reverbModel->setSampleRate(useProp.sampleRate);
-	delayReverbModel->reset();
-	delayReverbModel->setSampleRate(useProp.sampleRate);
+#if !MT32EMU_REDUCE_REVERB_MEMORY
+	for (int i = 0; i < 4; i++) {
+		reverbModels[i]->open(useProp.sampleRate);
+	}
+#endif
 	if (useProp.baseDir != NULL) {
 		char *baseDirCopy = new char[strlen(useProp.baseDir) + 1];
 		strcpy(baseDirCopy, useProp.baseDir);
@@ -541,9 +517,7 @@ bool Synth::open(SynthProperties &useProp) {
 		mt32ram.system.chanAssign[i] = i + 1;
 	}
 	mt32ram.system.masterVol = 100; // Confirmed
-	if (!refreshSystem()) {
-		return false;
-	}
+	refreshSystem();
 
 	for (int i = 0; i < 9; i++) {
 		MemParams::PatchTemp *patchTemp = &mt32ram.patchTemp[i];
@@ -581,7 +555,7 @@ bool Synth::open(SynthProperties &useProp) {
 	return true;
 }
 
-void Synth::close(void) {
+void Synth::close() {
 	if (!isOpen) {
 		return;
 	}
@@ -594,7 +568,7 @@ void Synth::close(void) {
 		parts[i] = NULL;
 	}
 
-	delete myProp.baseDir;
+	delete[] myProp.baseDir;
 	myProp.baseDir = NULL;
 
 	delete[] pcmWaves;
@@ -602,6 +576,10 @@ void Synth::close(void) {
 
 	deleteMemoryRegions();
 
+	for (int i = 0; i < 4; i++) {
+		reverbModels[i]->close();
+	}
+	reverbModel = NULL;
 	isOpen = false;
 }
 
@@ -626,7 +604,7 @@ void Synth::playMsg(Bit32u msg) {
 void Synth::playMsgOnPart(unsigned char part, unsigned char code, unsigned char note, unsigned char velocity) {
 	Bit32u bend;
 
-	//printDebug("Synth::playMsg(0x%02x)",msg);
+	//printDebug("Synth::playMsgOnPart(%02x, %02x, %02x, %02x)", part, code, note, velocity);
 	switch (code) {
 	case 0x8:
 		//printDebug("Note OFF - Part %d", part);
@@ -769,7 +747,8 @@ void Synth::playSysexWithoutHeader(unsigned char device, unsigned char command, 
 		return;
 	}
 	// This is checked early in the real devices (before any sysex length checks or further processing)
-	if (command == SYSEX_CMD_DT1 && sysex[0] == 0x7F) {
+	// FIXME: Response to SYSEX_CMD_DAT reset with partials active (and in general) is untested.
+	if ((command == SYSEX_CMD_DT1 || command == SYSEX_CMD_DAT) && sysex[0] == 0x7F) {
 		reset();
 		return;
 	}
@@ -784,9 +763,23 @@ void Synth::playSysexWithoutHeader(unsigned char device, unsigned char command, 
 	}
 	len -= 1; // Exclude checksum
 	switch (command) {
+	case SYSEX_CMD_DAT:
+		if (hasActivePartials()) {
+			printDebug("playSysexWithoutHeader: Got SYSEX_CMD_DAT but partials are active - ignoring");
+			// FIXME: We should send SYSEX_CMD_RJC in this case
+			break;
+		}
+		// Deliberate fall-through
 	case SYSEX_CMD_DT1:
 		writeSysex(device, sysex, len);
 		break;
+	case SYSEX_CMD_RQD:
+		if (hasActivePartials()) {
+			printDebug("playSysexWithoutHeader: Got SYSEX_CMD_RQD but partials are active - ignoring");
+			// FIXME: We should send SYSEX_CMD_RJC in this case
+			break;
+		}
+		// Deliberate fall-through
 	case SYSEX_CMD_RQ1:
 		readSysex(device, sysex, len);
 		break;
@@ -814,7 +807,7 @@ void Synth::writeSysex(unsigned char device, const Bit8u *sysex, Bit32u len) {
 		if (/*addr >= MT32EMU_MEMADDR(0x000000) && */addr < MT32EMU_MEMADDR(0x010000)) {
 			int offset;
 			if (chantable[device] == -1) {
-				printDebug(" (Channel not mapped to a partial... 0 offset)");
+				printDebug(" (Channel not mapped to a part... 0 offset)");
 				offset = 0;
 			} else if (chantable[device] == 8) {
 				printDebug(" (Channel mapped to rhythm... 0 offset)");
@@ -824,12 +817,12 @@ void Synth::writeSysex(unsigned char device, const Bit8u *sysex, Bit32u len) {
 				printDebug(" (Setting extra offset to %d)", offset);
 			}
 			addr += MT32EMU_MEMADDR(0x030000) + offset;
-		} else if (/*addr >= 0x010000 && */ addr < MT32EMU_MEMADDR(0x020000)) {
+		} else if (/*addr >= MT32EMU_MEMADDR(0x010000) && */ addr < MT32EMU_MEMADDR(0x020000)) {
 			addr += MT32EMU_MEMADDR(0x030110) - MT32EMU_MEMADDR(0x010000);
-		} else if (/*addr >= 0x020000 && */ addr < MT32EMU_MEMADDR(0x030000)) {
+		} else if (/*addr >= MT32EMU_MEMADDR(0x020000) && */ addr < MT32EMU_MEMADDR(0x030000)) {
 			int offset;
 			if (chantable[device] == -1) {
-				printDebug(" (Channel not mapped to a partial... 0 offset)");
+				printDebug(" (Channel not mapped to a part... 0 offset)");
 				offset = 0;
 			} else if (chantable[device] == 8) {
 				printDebug(" (Channel mapped to rhythm... 0 offset)");
@@ -840,7 +833,7 @@ void Synth::writeSysex(unsigned char device, const Bit8u *sysex, Bit32u len) {
 			}
 			addr += MT32EMU_MEMADDR(0x040000) - MT32EMU_MEMADDR(0x020000) + offset;
 		} else {
-			printDebug("writeSysex: Invalid channel %d address 0x%06x", device, MT32EMU_SYSEXMEMADDR(addr));
+			printDebug(" Invalid channel");
 			return;
 		}
 	}
@@ -1048,10 +1041,87 @@ void Synth::writeMemoryRegion(const MemoryRegion *region, Bit32u addr, Bit32u le
 		last += 128;
 		region->write(first, off, data, len);
 		for (unsigned int i = first; i <= last; i++) {
+#if MT32EMU_MONITOR_TIMBRES >= 1
+			TimbreParam *timbre = &mt32ram.timbres[i].timbre;
 			char instrumentName[11];
-			memcpy(instrumentName, mt32ram.timbres[i].timbre.common.name, 10);
+			memcpy(instrumentName, timbre->common.name, 10);
 			instrumentName[10] = 0;
 			printDebug("WRITE-TIMBRE (%d-%d@%d..%d): %d; name=\"%s\"", first, last, off, off + len, i, instrumentName);
+#if MT32EMU_MONITOR_TIMBRES >= 2
+#define DT(x) printDebug(" " #x ": %d", timbre->x)
+			DT(common.partialStructure12);
+			DT(common.partialStructure34);
+			DT(common.partialMute);
+			DT(common.noSustain);
+
+#define DTP(x) \
+			DT(partial[x].wg.pitchCoarse); \
+			DT(partial[x].wg.pitchFine); \
+			DT(partial[x].wg.pitchKeyfollow); \
+			DT(partial[x].wg.pitchBenderEnabled); \
+			DT(partial[x].wg.waveform); \
+			DT(partial[x].wg.pcmWave); \
+			DT(partial[x].wg.pulseWidth); \
+			DT(partial[x].wg.pulseWidthVeloSensitivity); \
+			DT(partial[x].pitchEnv.depth); \
+			DT(partial[x].pitchEnv.veloSensitivity); \
+			DT(partial[x].pitchEnv.timeKeyfollow); \
+			DT(partial[x].pitchEnv.time[0]); \
+			DT(partial[x].pitchEnv.time[1]); \
+			DT(partial[x].pitchEnv.time[2]); \
+			DT(partial[x].pitchEnv.time[3]); \
+			DT(partial[x].pitchEnv.level[0]); \
+			DT(partial[x].pitchEnv.level[1]); \
+			DT(partial[x].pitchEnv.level[2]); \
+			DT(partial[x].pitchEnv.level[3]); \
+			DT(partial[x].pitchEnv.level[4]); \
+			DT(partial[x].pitchLFO.rate); \
+			DT(partial[x].pitchLFO.depth); \
+			DT(partial[x].pitchLFO.modSensitivity); \
+			DT(partial[x].tvf.cutoff); \
+			DT(partial[x].tvf.resonance); \
+			DT(partial[x].tvf.keyfollow); \
+			DT(partial[x].tvf.biasPoint); \
+			DT(partial[x].tvf.biasLevel); \
+			DT(partial[x].tvf.envDepth); \
+			DT(partial[x].tvf.envVeloSensitivity); \
+			DT(partial[x].tvf.envDepthKeyfollow); \
+			DT(partial[x].tvf.envTimeKeyfollow); \
+			DT(partial[x].tvf.envTime[0]); \
+			DT(partial[x].tvf.envTime[1]); \
+			DT(partial[x].tvf.envTime[2]); \
+			DT(partial[x].tvf.envTime[3]); \
+			DT(partial[x].tvf.envTime[4]); \
+			DT(partial[x].tvf.envLevel[0]); \
+			DT(partial[x].tvf.envLevel[1]); \
+			DT(partial[x].tvf.envLevel[2]); \
+			DT(partial[x].tvf.envLevel[3]); \
+			DT(partial[x].tva.level); \
+			DT(partial[x].tva.veloSensitivity); \
+			DT(partial[x].tva.biasPoint1); \
+			DT(partial[x].tva.biasLevel1); \
+			DT(partial[x].tva.biasPoint2); \
+			DT(partial[x].tva.biasLevel2); \
+			DT(partial[x].tva.envTimeKeyfollow); \
+			DT(partial[x].tva.envTimeVeloSensitivity); \
+			DT(partial[x].tva.envTime[0]); \
+			DT(partial[x].tva.envTime[1]); \
+			DT(partial[x].tva.envTime[2]); \
+			DT(partial[x].tva.envTime[3]); \
+			DT(partial[x].tva.envTime[4]); \
+			DT(partial[x].tva.envLevel[0]); \
+			DT(partial[x].tva.envLevel[1]); \
+			DT(partial[x].tva.envLevel[2]); \
+			DT(partial[x].tva.envLevel[3]); 
+
+			DTP(0);
+			DTP(1);
+			DTP(2);
+			DTP(3);
+#undef DTP
+#undef DT
+#endif
+#endif
 			// FIXME:KG: Not sure if the stuff below should be done (for rhythm and/or parts)...
 			// Does the real MT-32 automatically do this?
 			for (unsigned int part = 0; part < 9; part++) {
@@ -1065,9 +1135,27 @@ void Synth::writeMemoryRegion(const MemoryRegion *region, Bit32u addr, Bit32u le
 		region->write(0, off, data, len);
 
 		report(ReportType_devReconfig, NULL);
-
+		// FIXME: We haven't properly confirmed any of this behaviour
+		// In particular, we tend to reset things such as reverb even if the write contained
+		// the same parameters as were already set, which may be wrong.
+		// On the other hand, the real thing could be resetting things even when they aren't touched
+		// by the write at all.
 		printDebug("WRITE-SYSTEM:");
-		refreshSystem();
+		if (off <= SYSTEM_MASTER_TUNE_OFF && off + len > SYSTEM_MASTER_TUNE_OFF) {
+			refreshSystemMasterTune();
+		}
+		if (off <= SYSTEM_REVERB_LEVEL_OFF && off + len > SYSTEM_REVERB_MODE_OFF) {
+			refreshSystemReverbParameters();
+		}
+		if (off <= SYSTEM_RESERVE_SETTINGS_END_OFF && off + len > SYSTEM_RESERVE_SETTINGS_START_OFF) {
+			refreshSystemReserveSettings();
+		}
+		if (off <= SYSTEM_CHAN_ASSIGN_END_OFF && off + len > SYSTEM_CHAN_ASSIGN_START_OFF) {
+			refreshSystemChanAssign();
+		}
+		if (off <= SYSTEM_MASTER_VOL_OFF && off + len > SYSTEM_MASTER_VOL_OFF) {
+			refreshSystemMasterVol();
+		}
 		break;
 	case MR_Display:
 		char buf[MAX_SYSEX_SIZE];
@@ -1082,10 +1170,52 @@ void Synth::writeMemoryRegion(const MemoryRegion *region, Bit32u addr, Bit32u le
 	}
 }
 
-bool Synth::refreshSystem() {
+void Synth::refreshSystemMasterTune() {
+	//FIXME:KG: This is just an educated guess.
+	// The LAPC-I documentation claims a range of 427.5Hz-452.6Hz (similar to what we have here)
+	// The MT-32 documentation claims a range of 432.1Hz-457.6Hz
+	masterTune = 440.0f * EXP2F((mt32ram.system.masterTune - 64.0f) / (128.0f * 12.0f));
+	printDebug(" Master Tune: %f", masterTune);
+}
+
+void Synth::refreshSystemReverbParameters() {
+	printDebug(" Reverb: mode=%d, time=%d, level=%d", mt32ram.system.reverbMode, mt32ram.system.reverbTime, mt32ram.system.reverbLevel);
+	if (reverbOverridden && reverbModel != NULL) {
+		printDebug(" (Reverb overridden - ignoring)");
+		return;
+	}
+	report(ReportType_newReverbMode,  &mt32ram.system.reverbMode);
+	report(ReportType_newReverbTime,  &mt32ram.system.reverbTime);
+	report(ReportType_newReverbLevel, &mt32ram.system.reverbLevel);
+
+	ReverbModel *newReverbModel = reverbModels[mt32ram.system.reverbMode];
+#if MT32EMU_REDUCE_REVERB_MEMORY
+	if (reverbModel != newReverbModel) {
+		if (reverbModel != NULL) {
+			reverbModel->close();
+		}
+		newReverbModel->open(myProp.sampleRate);
+	}
+#endif
+	reverbModel = newReverbModel;
+	reverbModel->setParameters(mt32ram.system.reverbTime, mt32ram.system.reverbLevel);
+}
+
+void Synth::refreshSystemReserveSettings() {
+	Bit8u *rset = mt32ram.system.reserveSettings;
+	printDebug(" Partial reserve: 1=%02d 2=%02d 3=%02d 4=%02d 5=%02d 6=%02d 7=%02d 8=%02d Rhythm=%02d", rset[0], rset[1], rset[2], rset[3], rset[4], rset[5], rset[6], rset[7], rset[8]);
+	int pr = partialManager->setReserve(rset);
+	if (pr != 32) {
+		printDebug(" (Partial Reserve Table with less than 32 partials reserved!)");
+	}
+}
+
+void Synth::refreshSystemChanAssign() {
 	memset(chantable, -1, sizeof(chantable));
 
-	for (unsigned int i = 0; i < 9; i++) {
+	// It seems that in case of assigning a channel to multiple parts the first assignment wins
+	// FIXME: need to be confirmed
+	for (int i = 8; i >= 0; i--) {
 		//LOG(LOG_MISC|LOG_ERROR,"Part %d set to MIDI channel %d",i,mt32ram.system.chanAssign[i]);
 		if (mt32ram.system.chanAssign[i] == 16 && parts[i] != NULL) {
 			parts[i]->allSoundOff();
@@ -1093,28 +1223,20 @@ bool Synth::refreshSystem() {
 			chantable[(int)mt32ram.system.chanAssign[i]] = (char)i;
 		}
 	}
-	//FIXME:KG: This is just an educated guess.
-	// The LAPC-I documentation claims a range of 427.5Hz-452.6Hz (similar to what we have here)
-	// The MT-32 documentation claims a range of 432.1Hz-457.6Hz
-	masterTune = 440.0f * EXP2F((mt32ram.system.masterTune - 64.0f) / (128.0f * 12.0f));
-	printDebug(" Master Tune: %f", masterTune);
-	printDebug(" Reverb: mode=%d, time=%d, level=%d", mt32ram.system.reverbMode, mt32ram.system.reverbTime, mt32ram.system.reverbLevel);
-	report(ReportType_newReverbMode,  &mt32ram.system.reverbMode);
-	report(ReportType_newReverbTime,  &mt32ram.system.reverbTime);
-	report(ReportType_newReverbLevel, &mt32ram.system.reverbLevel);
-
-	setReverbParameters(mt32ram.system.reverbMode, mt32ram.system.reverbTime, mt32ram.system.reverbLevel);
-
-	Bit8u *rset = mt32ram.system.reserveSettings;
-	printDebug(" Partial reserve: 1=%02d 2=%02d 3=%02d 4=%02d 5=%02d 6=%02d 7=%02d 8=%02d Rhythm=%02d", rset[0], rset[1], rset[2], rset[3], rset[4], rset[5], rset[6], rset[7], rset[8]);
-	int pr = partialManager->setReserve(rset);
-	if (pr != 32) {
-		printDebug(" (Partial Reserve Table with less than 32 partials reserved!)");
-	}
-	rset = mt32ram.system.chanAssign;
+	Bit8u *rset = mt32ram.system.chanAssign;
 	printDebug(" Part assign:     1=%02d 2=%02d 3=%02d 4=%02d 5=%02d 6=%02d 7=%02d 8=%02d Rhythm=%02d", rset[0], rset[1], rset[2], rset[3], rset[4], rset[5], rset[6], rset[7], rset[8]);
+}
+
+void Synth::refreshSystemMasterVol() {
 	printDebug(" Master volume: %d", mt32ram.system.masterVol);
-	return true;
+}
+
+void Synth::refreshSystem() {
+	refreshSystemMasterTune();
+	refreshSystemReverbParameters();
+	refreshSystemReserveSettings();
+	refreshSystemChanAssign();
+	refreshSystemMasterVol();
 }
 
 void Synth::reset() {
@@ -1140,8 +1262,8 @@ void Synth::render(Bit16s *stream, Bit32u len) {
 		return;
 	}
 	while (len > 0) {
-		Bit32u thisLen = len > MAX_SAMPLE_OUTPUT ? MAX_SAMPLE_OUTPUT : len;
-		doRenderStreams(tmpNonReverbLeft, tmpNonReverbRight, tmpReverbDryLeft, tmpReverbDryRight, tmpReverbWetLeft, tmpReverbWetRight, thisLen);
+		Bit32u thisLen = len > MAX_SAMPLES_PER_RUN ? MAX_SAMPLES_PER_RUN : len;
+		renderStreams(tmpNonReverbLeft, tmpNonReverbRight, tmpReverbDryLeft, tmpReverbDryRight, tmpReverbWetLeft, tmpReverbWetRight, thisLen);
 		for (Bit32u i = 0; i < thisLen; i++) {
 			stream[0] = clipBit16s((Bit32s)tmpNonReverbLeft[i] + (Bit32s)tmpReverbDryLeft[i] + (Bit32s)tmpReverbWetLeft[i]);
 			stream[1] = clipBit16s((Bit32s)tmpNonReverbRight[i] + (Bit32s)tmpReverbDryRight[i] + (Bit32s)tmpReverbWetRight[i]);
@@ -1151,6 +1273,69 @@ void Synth::render(Bit16s *stream, Bit32u len) {
 	}
 }
 
+bool Synth::prerender() {
+	int newPrerenderWriteIx = (prerenderWriteIx + 1) % MAX_PRERENDER_SAMPLES;
+	if (newPrerenderWriteIx == prerenderReadIx) {
+		// The prerender buffer is full
+		return false;
+	}
+	doRenderStreams(
+		prerenderNonReverbLeft + prerenderWriteIx,
+		prerenderNonReverbRight + prerenderWriteIx,
+		prerenderReverbDryLeft + prerenderWriteIx,
+		prerenderReverbDryRight + prerenderWriteIx,
+		prerenderReverbWetLeft + prerenderWriteIx,
+		prerenderReverbWetRight + prerenderWriteIx,
+		1);
+	prerenderWriteIx = newPrerenderWriteIx;
+	return true;
+}
+
+static inline void maybeCopy(Bit16s *out, Bit32u outPos, Bit16s *in, Bit32u inPos, Bit32u len) {
+	if (out == NULL) {
+		return;
+	}
+	memcpy(out + outPos, in + inPos, len * sizeof(Bit16s));
+}
+
+void Synth::copyPrerender(Bit16s *nonReverbLeft, Bit16s *nonReverbRight, Bit16s *reverbDryLeft, Bit16s *reverbDryRight, Bit16s *reverbWetLeft, Bit16s *reverbWetRight, Bit32u pos, Bit32u len) {
+	maybeCopy(nonReverbLeft, pos, prerenderNonReverbLeft, prerenderReadIx, len);
+	maybeCopy(nonReverbRight, pos, prerenderNonReverbRight, prerenderReadIx, len);
+	maybeCopy(reverbDryLeft, pos, prerenderReverbDryLeft, prerenderReadIx, len);
+	maybeCopy(reverbDryRight, pos, prerenderReverbDryRight, prerenderReadIx, len);
+	maybeCopy(reverbWetLeft, pos, prerenderReverbWetLeft, prerenderReadIx, len);
+	maybeCopy(reverbWetRight, pos, prerenderReverbWetRight, prerenderReadIx, len);
+}
+
+void Synth::checkPrerender(Bit16s *nonReverbLeft, Bit16s *nonReverbRight, Bit16s *reverbDryLeft, Bit16s *reverbDryRight, Bit16s *reverbWetLeft, Bit16s *reverbWetRight, Bit32u &pos, Bit32u &len) {
+	if (prerenderReadIx > prerenderWriteIx) {
+		// There's data in the prerender buffer, and the write index has wrapped.
+		Bit32u prerenderCopyLen = MAX_PRERENDER_SAMPLES - prerenderReadIx;
+		if (prerenderCopyLen > len) {
+			prerenderCopyLen = len;
+		}
+		copyPrerender(nonReverbLeft, nonReverbRight, reverbDryLeft, reverbDryRight, reverbWetLeft, reverbWetRight, pos, prerenderCopyLen);
+		len -= prerenderCopyLen;
+		pos += prerenderCopyLen;
+		prerenderReadIx = (prerenderReadIx + prerenderCopyLen) % MAX_PRERENDER_SAMPLES;
+	}
+	if (prerenderReadIx < prerenderWriteIx) {
+		// There's data in the prerender buffer, and the write index is ahead of the read index.
+		Bit32u prerenderCopyLen = prerenderWriteIx - prerenderReadIx;
+		if (prerenderCopyLen > len) {
+			prerenderCopyLen = len;
+		}
+		copyPrerender(nonReverbLeft, nonReverbRight, reverbDryLeft, reverbDryRight, reverbWetLeft, reverbWetRight, pos, prerenderCopyLen);
+		len -= prerenderCopyLen;
+		pos += prerenderCopyLen;
+		prerenderReadIx += prerenderCopyLen;
+	}
+	if (prerenderReadIx == prerenderWriteIx) {
+		// If the ring buffer's empty, reset it to start at 0 to minimise wrapping,
+		// which requires two writes instead of one.
+		prerenderReadIx = prerenderWriteIx = 0;
+	}
+}
 
 void Synth::renderStreams(Bit16s *nonReverbLeft, Bit16s *nonReverbRight, Bit16s *reverbDryLeft, Bit16s *reverbDryRight, Bit16s *reverbWetLeft, Bit16s *reverbWetRight, Bit32u len) {
 	if (!isEnabled) {
@@ -1163,8 +1348,13 @@ void Synth::renderStreams(Bit16s *nonReverbLeft, Bit16s *nonReverbRight, Bit16s 
 		return;
 	}
 	Bit32u pos = 0;
+
+	// First, check for data in the prerender buffer and spit that out before generating anything new.
+	// Note that the prerender buffer is rarely used - see comments elsewhere for details.
+	checkPrerender(nonReverbLeft, nonReverbRight, reverbDryLeft, reverbDryRight, reverbWetLeft, reverbWetRight, pos, len);
+
 	while (len > 0) {
-		Bit32u thisLen = len > MAX_SAMPLE_OUTPUT ? MAX_SAMPLE_OUTPUT : len;
+		Bit32u thisLen = len > MAX_SAMPLES_PER_RUN ? MAX_SAMPLES_PER_RUN : len;
 		doRenderStreams(
 			streamOffset(nonReverbLeft, pos),
 			streamOffset(nonReverbRight, pos),
@@ -1189,10 +1379,10 @@ void Synth::doRenderStreams(Bit16s *nonReverbLeft, Bit16s *nonReverbRight, Bit16
 			}
 		}
 		if (nonReverbLeft != NULL) {
-			la32FloatToBit16sFunc(nonReverbLeft, &tmpBufMixLeft[0], len);
+			la32FloatToBit16sFunc(nonReverbLeft, &tmpBufMixLeft[0], len, outputGain);
 		}
 		if (nonReverbRight != NULL) {
-			la32FloatToBit16sFunc(nonReverbRight, &tmpBufMixRight[0], len);
+			la32FloatToBit16sFunc(nonReverbRight, &tmpBufMixRight[0], len, outputGain);
 		}
 		clearIfNonNull(reverbDryLeft, len);
 		clearIfNonNull(reverbDryRight, len);
@@ -1208,10 +1398,10 @@ void Synth::doRenderStreams(Bit16s *nonReverbLeft, Bit16s *nonReverbRight, Bit16
 			}
 		}
 		if (nonReverbLeft != NULL) {
-			la32FloatToBit16sFunc(nonReverbLeft, &tmpBufMixLeft[0], len);
+			la32FloatToBit16sFunc(nonReverbLeft, &tmpBufMixLeft[0], len, outputGain);
 		}
 		if (nonReverbRight != NULL) {
-			la32FloatToBit16sFunc(nonReverbRight, &tmpBufMixRight[0], len);
+			la32FloatToBit16sFunc(nonReverbRight, &tmpBufMixRight[0], len, outputGain);
 		}
 
 		clearFloats(&tmpBufMixLeft[0], &tmpBufMixRight[0], len);
@@ -1224,23 +1414,19 @@ void Synth::doRenderStreams(Bit16s *nonReverbLeft, Bit16s *nonReverbRight, Bit16
 			}
 		}
 		if (reverbDryLeft != NULL) {
-			la32FloatToBit16sFunc(reverbDryLeft, &tmpBufMixLeft[0], len);
+			la32FloatToBit16sFunc(reverbDryLeft, &tmpBufMixLeft[0], len, outputGain);
 		}
 		if (reverbDryRight != NULL) {
-			la32FloatToBit16sFunc(reverbDryRight, &tmpBufMixRight[0], len);
+			la32FloatToBit16sFunc(reverbDryRight, &tmpBufMixRight[0], len, outputGain);
 		}
 
 		// FIXME: Note that on the real devices, reverb input and output are signed linear 16-bit (well, kinda, there's some fudging) PCM, not float.
-		if (mt32ram.system.reverbMode == 3) {
-			delayReverbModel->process(&tmpBufMixLeft[0], &tmpBufMixRight[0], &tmpBufReverbOutLeft[0], &tmpBufReverbOutRight[0], len);
-		} else {
-			reverbModel->process(&tmpBufMixLeft[0], &tmpBufMixRight[0], &tmpBufReverbOutLeft[0], &tmpBufReverbOutRight[0], len);
-		}
+		reverbModel->process(&tmpBufMixLeft[0], &tmpBufMixRight[0], &tmpBufReverbOutLeft[0], &tmpBufReverbOutRight[0], len);
 		if (reverbWetLeft != NULL) {
-			floatToBit16s_pure(reverbWetLeft, &tmpBufReverbOutLeft[0], len);
+			reverbFloatToBit16sFunc(reverbWetLeft, &tmpBufReverbOutLeft[0], len, reverbOutputGain);
 		}
 		if (reverbWetRight != NULL) {
-			floatToBit16s_pure(reverbWetRight, &tmpBufReverbOutRight[0], len);
+			reverbFloatToBit16sFunc(reverbWetRight, &tmpBufReverbOutRight[0], len, reverbOutputGain);
 		}
 	}
 	partialManager->clearAlreadyOutputed();
@@ -1256,18 +1442,26 @@ void Synth::doRenderStreams(Bit16s *nonReverbLeft, Bit16s *nonReverbRight, Bit16
 #endif
 }
 
-bool Synth::isActive() const {
+bool Synth::hasActivePartials() const {
+	if (prerenderReadIx != prerenderWriteIx) {
+		// Data in the prerender buffer means that the current isActive() states are "in the future".
+		// It also means that partials are definitely active at this render point.
+		return true;
+	}
 	for (int partialNum = 0; partialNum < MT32EMU_MAX_PARTIALS; partialNum++) {
 		if (partialManager->getPartial(partialNum)->isActive()) {
 			return true;
 		}
 	}
+	return false;
+}
+
+bool Synth::isActive() const {
+	if (hasActivePartials()) {
+		return true;
+	}
 	if (reverbEnabled) {
-		if (mt32ram.system.reverbMode == 3) {
-			return delayReverbModel->isActive();
-		} else {
-			return reverbModel->isActive();
-		}
+		return reverbModel->isActive();
 	}
 	return false;
 }
@@ -1335,75 +1529,6 @@ void MemoryRegion::write(unsigned int entry, unsigned int off, const Bit8u *src,
 		}
 		memOff++;
 	}
-}
-
-FreeverbModel::FreeverbModel() {
-	freeverb = NULL; // Will be initialised with the first setParameters() call.
-	scaletuning = 1.0f;
-}
-
-FreeverbModel::~FreeverbModel() {
-	delete freeverb;
-}
-
-void FreeverbModel::setSampleRate(unsigned int sampleRate) {
-	// FIXME: scaletuning must be multiplied by sample rate to 32000Hz ratio
-	// IIR filter values depend on sample rate as well
-}
-
-void FreeverbModel::process(const float *inLeft, const float *inRight, float *outLeft, float *outRight, unsigned long numSamples) {
-	freeverb->process(inLeft, inRight, outLeft, outRight, numSamples);
-}
-
-void FreeverbModel::setParameters(Bit8u mode, Bit8u time, Bit8u level) {
-	// FIXME:KG: I don't think it's necessary to recreate freeverb's model... Just set the parameters.
-	float filtval, wet, room, damp;
-
-	switch (mode) {
-	case 1:
-		filtval = 0.712025098f;
-		scaletuning = 2.0f;
-		wet = 0.86f;
-		room = 0.9f;
-		damp = 0.5f;
-		break;
-	case 2:
-		filtval = 0.939522749f;
-		scaletuning = 0.4f;
-		wet = 0.38f;
-		room = 1.01f;
-		damp = 0.05f;
-		break;
-	default:	// default mode 0
-		filtval = 0.687770909f;
-		scaletuning = 0.76f;
-		wet = 0.63f;
-		room = 1.0f;
-		damp = 0.5f;
-		break;
-	}
-
-	reset();
-	freeverb->setfiltval(filtval);
-
-	// wet signal level
-	freeverb->setwet((float)level / 7.0f * wet);
-
-	// wet signal decay speed
-	freeverb->setroomsize((0.5f + 0.5f * (float)time / 7.0f) * room);
-
-	// decay speed of high frequencies in the wet signal
-	freeverb->setdamp(damp);
-}
-
-void FreeverbModel::reset() {
-	delete freeverb;
-	freeverb = new revmodel(scaletuning);
-}
-
-bool FreeverbModel::isActive() const {
-	// FIXME: Not bothering to do this properly since we'll be replacing Freeverb soon...
-	return false;
 }
 
 }

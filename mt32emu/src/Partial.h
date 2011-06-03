@@ -44,7 +44,9 @@ private:
 	// Distance in (possibly fractional) samples from the start of the current pulse
 	float wavePos;
 
-	float myBuffer[MAX_SAMPLE_OUTPUT];
+	float lastFreq;
+
+	float myBuffer[MAX_SAMPLES_PER_RUN];
 
 	// Only used for PCM partials
 	int pcmNum;
@@ -57,9 +59,10 @@ private:
 
 	float pcmPosition;
 
-	float history[32];
-
 	Poly *poly;
+
+	LA32Ramp ampRamp;
+	LA32Ramp cutoffModifierRamp;
 
 	float *mixBuffersRingMix(float *buf1, float *buf2, unsigned long len);
 	float *mixBuffersRing(float *buf1, float *buf2, unsigned long len);
@@ -71,7 +74,6 @@ public:
 	TVA *tva;
 	TVP *tvp;
 	TVF *tvf;
-	bool play;
 
 	PatchCache cachebackup;
 
@@ -88,6 +90,7 @@ public:
 	void activate(int part);
 	void deactivate(void);
 	void startPartial(const Part *part, Poly *usePoly, const PatchCache *useCache, const MemParams::RhythmTemp *rhythmTemp, Partial *pairPartial);
+	void startAbort();
 	void startDecayAll();
 	bool shouldReverb();
 	bool hasRingModulatingSlave() const;

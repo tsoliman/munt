@@ -22,7 +22,7 @@ namespace MT32Emu {
 
 class Part;
 
-// Note that when entering nextPhase, newPhase is set to phase + 1, and the descriptions/names below refer to
+// Note that when entering nextPhase(), newPhase is set to phase + 1, and the descriptions/names below refer to
 // newPhase's value.
 enum {
 	// In this phase, the base amp (as calculated in calcBasicAmp()) is targeted with an instant time.
@@ -56,6 +56,7 @@ enum {
 class TVA {
 private:
 	const Partial * const partial;
+	LA32Ramp *ampRamp;
 	const MemParams::System * const system;
 
 	const Part *part;
@@ -69,26 +70,20 @@ private:
 	int veloAmpSubtraction;
 	int keyTimeSubtraction;
 
-	int interruptCountdown;
+	Bit8u target;
 	int phase;
-	Bit32u currentAmp;
-	unsigned int largeAmpInc;
 
-	// See comment at the top of tva.cpp for an explanation on the meaning of these variables.
-	Bit8u la32AmpTarget;
-	Bit8u la32AmpIncrement;
-
-	void startRamp(Bit8u newLA32AmpTarget, Bit8u newLA32AmpIncrement, int newPhase);
+	void startRamp(Bit8u newTarget, Bit8u newIncrement, int newPhase);
 	void end(int newPhase);
-	//void setAmpIncrement(Bit8u ampIncrement);
 	void nextPhase();
 
 public:
-	TVA(const Partial *partial);
+	TVA(const Partial *partial, LA32Ramp *ampRamp);
 	void reset(const Part *part, const TimbreParam::PartialParam *partialParam, const MemParams::RhythmTemp *rhythmTemp);
-	float nextAmp();
+	void handleInterrupt();
 	void recalcSustain();
 	void startDecay();
+	void startAbort();
 
 	bool isPlaying() const;
 	int getPhase() const;
