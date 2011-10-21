@@ -1,3 +1,9 @@
+mt32emu-alsadrv (0.1.3.99+git20111003+08e1515-2) experimental; urgency=low
+
+  * Disable ACCURATE_WG for better performance
+
+ -- Tarek Soliman <tarek@bashasoliman.com>  Thu, 20 Oct 2011 21:37:55 -0500
+
 mt32emu-alsadrv (0.1.3.99+git20111003+08e1515-1) experimental; urgency=low
 
   * New upstream snapshot
