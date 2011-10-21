@@ -15,39 +15,30 @@
  *  along with this program.  If not, see <http://www.gnu.org/licenses/>.
  */
 
-#include "mt32emu.h"
-#include "ANSIFile.h"
+#ifndef MT32EMU_FILE_STREAM_H
+#define MT32EMU_FILE_STREAM_H
 
-using namespace MT32Emu;
+#include <fstream>
+#include <iostream>
+#include <cstdio>
 
-bool ANSIFile::open(const char *filename, OpenMode mode) {
-	const char *fmode;
-	if (mode == OpenMode_read) {
-		fmode = "rb";
-	} else {
-		fmode = "wb";
-	}
-	fp = fopen(filename, fmode);
-	return (fp != NULL);
+#include "File.h"
+
+namespace MT32Emu {
+
+class FileStream: public File {
+private:
+	std::ifstream *ifsp;
+public:
+	FileStream();
+	virtual ~FileStream();
+	virtual size_t getSize();
+	virtual unsigned char* getData();
+
+	bool open(const char *filename);
+	void close();
+};
+
 }
 
-void ANSIFile::close() {
-	fclose(fp);
-}
-
-size_t ANSIFile::read(void *in, size_t size) {
-	return fread(in, 1, size, fp);
-}
-
-bool ANSIFile::readBit8u(Bit8u *in) {
-	int c = fgetc(fp);
-	if (c == EOF) {
-		return false;
-	}
-	*in = (Bit8u)c;
-	return true;
-}
-
-bool ANSIFile::isEOF() {
-	return feof(fp) != 0;
-}
+#endif

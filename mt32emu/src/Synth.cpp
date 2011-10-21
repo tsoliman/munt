@@ -22,7 +22,7 @@
 
 #include "mt32emu.h"
 #include "mmath.h"
-#include "ANSIFile.h"
+#include "FileStream.h"
 #include "PartialManager.h"
 
 #if MT32EMU_USE_AREVERBMODEL == 1
@@ -242,9 +242,9 @@ void Synth::setReverbOutputGain(float newReverbOutputGain) {
 	reverbOutputGain = newReverbOutputGain;
 }
 
-File *Synth::openFile(const char *filename, File::OpenMode mode) {
+File *Synth::openFile(const char *filename) {
 	if (myProp.openFile != NULL) {
-		return myProp.openFile(myProp.userData, filename, mode);
+		return myProp.openFile(myProp.userData, filename);
 	}
 	char pathBuf[2048];
 	if (myProp.baseDir != NULL) {
@@ -252,8 +252,8 @@ File *Synth::openFile(const char *filename, File::OpenMode mode) {
 		strcat(&pathBuf[0], filename);
 		filename = pathBuf;
 	}
-	ANSIFile *file = new ANSIFile();
-	if (!file->open(filename, mode)) {
+	FileStream *file = new FileStream();
+	if (!file->open(filename)) {
 		delete file;
 		return NULL;
 	}
@@ -270,14 +270,18 @@ void Synth::closeFile(File *file) {
 }
 
 LoadResult Synth::loadControlROM(const char *filename) {
-	File *file = openFile(filename, File::OpenMode_read); // ROM File
+	File *file = openFile(filename); // ROM File
 	if (file == NULL) {
 		return LoadResult_NotFound;
 	}
-	bool rc = (file->read(controlROMData, CONTROL_ROM_SIZE) == CONTROL_ROM_SIZE);
-
+	size_t fileSize = file->getSize();
+	if (fileSize != CONTROL_ROM_SIZE) {
+		printDebug("Control ROM file %s size mismatch: %i", filename, fileSize);
+	}
+	Bit8u *fileData = file->getData();
+	memcpy(controlROMData, fileData, CONTROL_ROM_SIZE);
 	closeFile(file);
-	if (!rc) {
+	if (fileData == NULL) {
 		return LoadResult_Unreadable;
 	}
 
@@ -294,29 +298,25 @@ LoadResult Synth::loadControlROM(const char *filename) {
 }
 
 LoadResult Synth::loadPCMROM(const char *filename) {
-	File *file = openFile(filename, File::OpenMode_read); // ROM File
+	File *file = openFile(filename); // ROM File
 	if (file == NULL) {
 		return LoadResult_NotFound;
 	}
+	size_t fileSize = file->getSize();
+	if (fileSize < (2 * pcmROMSize)) {
+		printDebug("PCM ROM file is too short (expected %d, got %d)", 2 * pcmROMSize, fileSize);
+		closeFile(file);
+		return LoadResult_Invalid;
+	}
+	Bit8u *fileData = file->getData();
+	if (fileData == NULL) {
+		closeFile(file);
+		return LoadResult_Unreadable;
+	}
 	LoadResult rc = LoadResult_OK;
-	int i;
-	for (i = 0; i < pcmROMSize; i++) {
-		Bit8u s;
-		if (!file->readBit8u(&s)) {
-			if (!file->isEOF()) {
-				rc = LoadResult_Unreadable;
-			}
-			break;
-		}
-		Bit8u c;
-		if (!file->readBit8u(&c)) {
-			if (!file->isEOF()) {
-				rc = LoadResult_Unreadable;
-			} else {
-				printDebug("PCM ROM file has an odd number of bytes! Ignoring last");
-			}
-			break;
-		}
+	for (int i = 0; i < pcmROMSize; i++) {
+		Bit8u s = *(fileData++);
+		Bit8u c = *(fileData++);
 
 		int order[16] = {0, 9, 1, 2, 3, 4, 5, 6, 7, 10, 11, 12, 13, 14, 15, 8};
 
@@ -341,10 +341,6 @@ LoadResult Synth::loadPCMROM(const char *filename) {
 		}
 
 		pcmROMData[i] = lin;
-	}
-	if (i != pcmROMSize) {
-		printDebug("PCM ROM file is too short (expected %d, got %d)", pcmROMSize, i);
-		rc = LoadResult_Invalid;
 	}
 	closeFile(file);
 	return rc;
@@ -424,7 +420,7 @@ bool Synth::open(SynthProperties &useProp) {
 	prerenderReadIx = prerenderWriteIx = 0;
 	myProp = useProp;
 #if MT32EMU_MONITOR_INIT
-	synth->printDebug("Initialising Constant Tables");
+	printDebug("Initialising Constant Tables");
 #endif
 	tables.init();
 #if !MT32EMU_REDUCE_REVERB_MEMORY
@@ -1200,7 +1196,13 @@ void Synth::writeMemoryRegion(const MemoryRegion *region, Bit32u addr, Bit32u le
 			refreshSystemReserveSettings();
 		}
 		if (off <= SYSTEM_CHAN_ASSIGN_END_OFF && off + len > SYSTEM_CHAN_ASSIGN_START_OFF) {
-			refreshSystemChanAssign();
+			int firstPart = off - SYSTEM_CHAN_ASSIGN_START_OFF;
+			if(firstPart < 0)
+				firstPart = 0;
+			int lastPart = off + len - SYSTEM_CHAN_ASSIGN_START_OFF;
+			if(lastPart > 9)
+				lastPart = 9;
+			refreshSystemChanAssign(firstPart, lastPart);
 		}
 		if (off <= SYSTEM_MASTER_VOL_OFF && off + len > SYSTEM_MASTER_VOL_OFF) {
 			refreshSystemMasterVol();
@@ -1222,11 +1224,11 @@ void Synth::writeMemoryRegion(const MemoryRegion *region, Bit32u addr, Bit32u le
 }
 
 void Synth::refreshSystemMasterTune() {
+#if MT32EMU_MONITOR_SYSEX > 0
 	//FIXME:KG: This is just an educated guess.
 	// The LAPC-I documentation claims a range of 427.5Hz-452.6Hz (similar to what we have here)
 	// The MT-32 documentation claims a range of 432.1Hz-457.6Hz
-	masterTune = 440.0f * EXP2F((mt32ram.system.masterTune - 64.0f) / (128.0f * 12.0f));
-#if MT32EMU_MONITOR_SYSEX > 0
+	float masterTune = 440.0f * EXP2F((mt32ram.system.masterTune - 64.0f) / (128.0f * 12.0f));
 	printDebug(" Master Tune: %f", masterTune);
 #endif
 }
@@ -1266,19 +1268,22 @@ void Synth::refreshSystemReserveSettings() {
 	partialManager->setReserve(rset);
 }
 
-void Synth::refreshSystemChanAssign() {
+void Synth::refreshSystemChanAssign(unsigned int firstPart, unsigned int lastPart) {
 	memset(chantable, -1, sizeof(chantable));
 
-	// It seems that in case of assigning a channel to multiple parts the first assignment wins
-	// FIXME: need to be confirmed
-	for (int i = 8; i >= 0; i--) {
-		//LOG(LOG_MISC|LOG_ERROR,"Part %d set to MIDI channel %d",i,mt32ram.system.chanAssign[i]);
-		if (mt32ram.system.chanAssign[i] == 16 && parts[i] != NULL) {
+	// CONFIRMED: In the case of assigning a channel to multiple parts, the lower part wins.
+	for (unsigned int i = 0; i <= 8; i++) {
+		if (parts[i] != NULL && i >= firstPart && i <= lastPart) {
+			// CONFIRMED: Decay is started for all polys, and all controllers are reset, for every part whose assignment was touched by the sysex write.
 			parts[i]->allSoundOff();
-		} else {
-			chantable[(int)mt32ram.system.chanAssign[i]] = (char)i;
+			parts[i]->resetAllControllers();
+		}
+		int chan = mt32ram.system.chanAssign[i];
+		if (chan != 16 && chantable[chan] == -1) {
+			chantable[chan] = i;
 		}
 	}
+
 #if MT32EMU_MONITOR_SYSEX > 0
 	Bit8u *rset = mt32ram.system.chanAssign;
 	printDebug(" Part assign:     1=%02d 2=%02d 3=%02d 4=%02d 5=%02d 6=%02d 7=%02d 8=%02d Rhythm=%02d", rset[0], rset[1], rset[2], rset[3], rset[4], rset[5], rset[6], rset[7], rset[8]);
@@ -1295,7 +1300,7 @@ void Synth::refreshSystem() {
 	refreshSystemMasterTune();
 	refreshSystemReverbParameters();
 	refreshSystemReserveSettings();
-	refreshSystemChanAssign();
+	refreshSystemChanAssign(0, 8);
 	refreshSystemMasterVol();
 }
 

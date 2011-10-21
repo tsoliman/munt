@@ -15,24 +15,43 @@
  *  along with this program.  If not, see <http://www.gnu.org/licenses/>.
  */
 
+#include <cstdio>
 #include "mt32emu.h"
+#include "sha1/sha1.h"
 
 using namespace MT32Emu;
 
-bool File::readBit16u(Bit16u *in) {
-	Bit8u b[2];
-	if (read(&b[0], 2) != 2) {
-		return false;
+static void SHA1DigestToString(char *strDigest, const unsigned int intDigest [])
+{
+	for (int i = 0; i < 5 ; i++) {
+		sprintf(strDigest, "%08X", intDigest[i]);
+		if (i < 4) {
+			strDigest += 8;
+			*(strDigest++) = '-';
+		}
 	}
-	*in = ((b[0] << 8) | b[1]);
-	return true;
 }
 
-bool File::readBit32u(Bit32u *in) {
-	Bit8u b[4];
-	if (read(&b[0], 4) != 4) {
-		return false;
+File::File() : fileSize(0), data(NULL) {
+	sha1Digest [0] = 0;
+}
+
+unsigned char* File::getSHA1() {
+	if (sha1Digest [0] != 0) {
+		return sha1Digest;
 	}
-	*in = ((b[0] << 24) | (b[1] << 16) | (b[2] << 8) | b[3]);
-	return true;
+
+	if (getData() == NULL) {
+		return NULL;
+	}
+
+	SHA1 sha1;
+	unsigned int fileDigest [5];
+
+	sha1.Input(data, fileSize);
+	if (sha1.Result(fileDigest) == false) {
+		return NULL;
+	}
+	SHA1DigestToString((char *) sha1Digest, fileDigest);
+	return sha1Digest;
 }

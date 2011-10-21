@@ -30,16 +30,17 @@ foreach(HEADER ${libmt32emu_HEADERS})
 endforeach(HEADER)
 
 add_library(mt32emu STATIC
-  src/ANSIFile.cpp
   src/AReverbModel.cpp
   src/DelayReverb.cpp
   src/File.cpp
+  src/FileStream.cpp
   src/FreeverbModel.cpp
   src/LA32Ramp.cpp
   src/Part.cpp
   src/Partial.cpp
   src/PartialManager.cpp
   src/Poly.cpp
+  src/ROMInfo.cpp
   src/Synth.cpp
   src/Tables.cpp
   src/TVA.cpp
@@ -48,6 +49,7 @@ add_library(mt32emu STATIC
   src/freeverb/allpass.cpp
   src/freeverb/comb.cpp
   src/freeverb/revmodel.cpp
+  src/sha1/sha1.cpp
 )
 
 install(TARGETS mt32emu
